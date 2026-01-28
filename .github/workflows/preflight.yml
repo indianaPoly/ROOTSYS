@@ -1,0 +1,117 @@
+name: preflight
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect project types
+        id: detect
+        shell: bash
+        run: |
+          if [ -f package.json ]; then
+            echo "js=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "js=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ -f requirements.txt ] || [ -f pyproject.toml ]; then
+            echo "py=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "py=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Node
+        if: steps.detect.outputs.js == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install JS dependencies
+        if: steps.detect.outputs.js == 'true'
+        shell: bash
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: JS lint
+        if: steps.detect.outputs.js == 'true'
+        run: npm run lint --if-present
+
+      - name: JS typecheck
+        if: steps.detect.outputs.js == 'true'
+        run: npm run typecheck --if-present
+
+      - name: JS tests
+        if: steps.detect.outputs.js == 'true'
+        run: npm run test --if-present
+
+      - name: JS build
+        if: steps.detect.outputs.js == 'true'
+        run: npm run build --if-present
+
+      - name: Setup Python
+        if: steps.detect.outputs.py == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies (if requirements.txt)
+        if: steps.detect.outputs.py == 'true'
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            python -m pip install -r requirements.txt
+          else
+            echo "requirements.txt not found; skipping install"
+          fi
+
+      - name: Python lint (ruff if installed)
+        if: steps.detect.outputs.py == 'true'
+        shell: bash
+        run: |
+          if command -v ruff >/dev/null 2>&1; then
+            ruff check .
+          else
+            echo "ruff not installed; skipping"
+          fi
+
+      - name: Python tests (pytest if installed)
+        if: steps.detect.outputs.py == 'true'
+        shell: bash
+        run: |
+          if command -v pytest >/dev/null 2>&1; then
+            pytest
+          else
+            echo "pytest not installed; skipping"
+          fi
+
+      - name: Python build (python -m build if configured)
+        if: steps.detect.outputs.py == 'true'
+        shell: bash
+        run: |
+          if python -c "import build" >/dev/null 2>&1; then
+            python -m build
+          else
+            echo "python-build not installed; skipping"
+          fi
+
+      - name: No-op notice
+        if: steps.detect.outputs.js != 'true' && steps.detect.outputs.py != 'true'
+        run: |
+          echo "No package.json / pyproject.toml / requirements.txt detected."
+          echo "This workflow is a template; add your project files to activate checks."
