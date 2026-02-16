@@ -41,7 +41,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     let interface = ExternalInterface::load(&args.interface)?;
-    let source = args.source.clone().unwrap_or_else(|| interface.name.clone());
+    let source = args
+        .source
+        .clone()
+        .unwrap_or_else(|| interface.name.clone());
 
     let driver_kind = match args.format {
         InputFormat::Auto => interface.driver.kind,
@@ -82,9 +85,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     write_jsonl(&args.output, &outcome.records)?;
 
     if !outcome.dead_letters.is_empty() {
-        let dlq_path = args
-            .dlq
-            .unwrap_or_else(|| with_suffix(&args.output, "dlq"));
+        let dlq_path = args.dlq.unwrap_or_else(|| with_suffix(&args.output, "dlq"));
         write_jsonl(&dlq_path, &outcome.dead_letters)?;
     }
 
