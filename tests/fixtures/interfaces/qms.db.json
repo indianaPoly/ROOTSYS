@@ -1,0 +1,15 @@
+{
+  "name": "qms",
+  "version": "v1",
+  "driver": {
+    "kind": "db",
+    "db": {
+      "kind": "sqlite",
+      "connection": "tests/fixtures/db/qms.db",
+      "query": "SELECT * FROM quality_claims"
+    }
+  },
+  "payload_format": "json",
+  "record_id_paths": ["/claim_id"],
+  "required_paths": ["/claim_id"]
+}
