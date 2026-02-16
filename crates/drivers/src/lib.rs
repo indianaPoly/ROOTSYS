@@ -7,6 +7,7 @@ use std::time::Duration;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use common::{ExternalRecord, Payload, PayloadFormat, RecordMetadata};
+use mysql::prelude::Queryable;
 use thiserror::Error;
 
 /// Errors returned while fetching data from external systems.
@@ -15,7 +16,10 @@ pub enum DriverError {
     #[error("failed to open input: {0}")]
     Io(#[from] std::io::Error),
     #[error("invalid json on line {line}: {source}")]
-    InvalidJson { line: usize, source: serde_json::Error },
+    InvalidJson {
+        line: usize,
+        source: serde_json::Error,
+    },
     #[error("http request failed: {0}")]
     Http(#[from] ureq::Error),
     #[error("http status {status}: {body}")]
@@ -24,6 +28,10 @@ pub enum DriverError {
     InvalidResponse(String),
     #[error("db error: {0}")]
     Db(#[from] rusqlite::Error),
+    #[error("postgres error: {0}")]
+    Postgres(#[from] postgres::Error),
+    #[error("mysql error: {0}")]
+    Mysql(#[from] mysql::Error),
     #[error("unsupported db kind: {0}")]
     UnsupportedDbKind(String),
 }
@@ -120,8 +128,8 @@ impl ExternalSystem for JsonlDriver {
             if line.trim().is_empty() {
                 continue;
             }
-            let payload: serde_json::Value = serde_json::from_str(&line)
-                .map_err(|source| DriverError::InvalidJson {
+            let payload: serde_json::Value =
+                serde_json::from_str(&line).map_err(|source| DriverError::InvalidJson {
                     line: idx + 1,
                     source,
                 })?;
@@ -257,7 +265,9 @@ impl ExternalSystem for RestDriver {
             Err(err) => return Err(DriverError::Http(err)),
         };
 
-        let content_type = response.header("content-type").map(|value| value.to_string());
+        let content_type = response
+            .header("content-type")
+            .map(|value| value.to_string());
         let mut bytes = Vec::new();
         response.into_reader().read_to_end(&mut bytes)?;
 
@@ -317,8 +327,8 @@ impl ExternalSystem for DbDriver {
     fn fetch(&mut self) -> Result<Vec<ExternalRecord>, DriverError> {
         match self.config.kind {
             DbKind::Sqlite => fetch_sqlite(&self.config, &self.metadata),
-            DbKind::Postgres => Err(DriverError::UnsupportedDbKind("postgres".to_string())),
-            DbKind::Mysql => Err(DriverError::UnsupportedDbKind("mysql".to_string())),
+            DbKind::Postgres => fetch_postgres(&self.config, &self.metadata),
+            DbKind::Mysql => fetch_mysql(&self.config, &self.metadata),
         }
     }
 }
@@ -338,12 +348,7 @@ fn fetch_sqlite(
 
     let mut rows = stmt.query([])?;
     let mut records = Vec::new();
-    let metadata = metadata_with_content_type(
-        metadata.clone(),
-        None,
-        "application/json",
-        None,
-    );
+    let metadata = metadata_with_content_type(metadata.clone(), None, "application/json", None);
 
     while let Some(row) = rows.next()? {
         let mut map = serde_json::Map::new();
@@ -362,20 +367,224 @@ fn fetch_sqlite(
     Ok(records)
 }
 
+/// Fetch records from a postgres database and map each row to a JSON object.
+fn fetch_postgres(
+    config: &DbConfig,
+    metadata: &RecordMetadata,
+) -> Result<Vec<ExternalRecord>, DriverError> {
+    let mut client = postgres::Client::connect(&config.connection, postgres::NoTls)?;
+    let rows = client.query(&config.query, &[])?;
+
+    let metadata = metadata_with_content_type(metadata.clone(), None, "application/json", None);
+
+    let mut records = Vec::new();
+    for row in rows {
+        let mut map = serde_json::Map::new();
+        for (idx, column) in row.columns().iter().enumerate() {
+            let value = postgres_value_to_json(&row, idx, column.type_())?;
+            map.insert(column.name().to_string(), value);
+        }
+
+        records.push(ExternalRecord {
+            payload: Payload::from_json(serde_json::Value::Object(map)),
+            metadata: metadata.clone(),
+        });
+    }
+
+    Ok(records)
+}
+
+/// Fetch records from a mysql database and map each row to a JSON object.
+fn fetch_mysql(
+    config: &DbConfig,
+    metadata: &RecordMetadata,
+) -> Result<Vec<ExternalRecord>, DriverError> {
+    let pool = mysql::Pool::new(config.connection.as_str())?;
+    let mut conn = pool.get_conn()?;
+    let result = conn.query_iter(&config.query)?;
+    let columns: Vec<String> = result
+        .columns()
+        .as_ref()
+        .iter()
+        .map(|col| col.name_str().to_string())
+        .collect();
+
+    let metadata = metadata_with_content_type(metadata.clone(), None, "application/json", None);
+
+    let mut records = Vec::new();
+    for row_result in result {
+        let row = row_result?;
+        let mut map = serde_json::Map::new();
+        let values = row.unwrap();
+        for (idx, value) in values.into_iter().enumerate() {
+            let name = columns
+                .get(idx)
+                .cloned()
+                .unwrap_or_else(|| format!("col_{}", idx + 1));
+            map.insert(name, mysql_value_to_json(value));
+        }
+
+        records.push(ExternalRecord {
+            payload: Payload::from_json(serde_json::Value::Object(map)),
+            metadata: metadata.clone(),
+        });
+    }
+
+    Ok(records)
+}
+
 /// Convert sqlite value types to JSON-friendly values.
 fn sqlite_value_to_json(value: rusqlite::types::ValueRef<'_>) -> serde_json::Value {
     match value {
         rusqlite::types::ValueRef::Null => serde_json::Value::Null,
         rusqlite::types::ValueRef::Integer(value) => serde_json::Value::Number(value.into()),
-        rusqlite::types::ValueRef::Real(value) => {
-            serde_json::Number::from_f64(value).map_or(serde_json::Value::Null, serde_json::Value::Number)
-        }
+        rusqlite::types::ValueRef::Real(value) => serde_json::Number::from_f64(value)
+            .map_or(serde_json::Value::Null, serde_json::Value::Number),
         rusqlite::types::ValueRef::Text(value) => {
             serde_json::Value::String(String::from_utf8_lossy(value).to_string())
         }
-        rusqlite::types::ValueRef::Blob(value) => {
-            serde_json::Value::String(STANDARD.encode(value))
+        rusqlite::types::ValueRef::Blob(value) => serde_json::Value::String(STANDARD.encode(value)),
+    }
+}
+
+/// Convert postgres row values into JSON-compatible values.
+fn postgres_value_to_json(
+    row: &postgres::Row,
+    idx: usize,
+    ty: &postgres::types::Type,
+) -> Result<serde_json::Value, DriverError> {
+    use postgres::types::Type;
+
+    let value = match *ty {
+        Type::BOOL => option_bool_to_json(row.try_get::<_, Option<bool>>(idx)?),
+        Type::INT2 => option_i64_to_json(row.try_get::<_, Option<i16>>(idx)?.map(i64::from)),
+        Type::INT4 => option_i64_to_json(row.try_get::<_, Option<i32>>(idx)?.map(i64::from)),
+        Type::INT8 => option_i64_to_json(row.try_get::<_, Option<i64>>(idx)?),
+        Type::FLOAT4 => option_f64_to_json(row.try_get::<_, Option<f32>>(idx)?.map(f64::from)),
+        Type::FLOAT8 => option_f64_to_json(row.try_get::<_, Option<f64>>(idx)?),
+        Type::NUMERIC => option_string_to_json(row.try_get::<_, Option<String>>(idx)?),
+        Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::NAME | Type::CHAR => {
+            option_string_to_json(row.try_get::<_, Option<String>>(idx)?)
         }
+        Type::JSON | Type::JSONB => {
+            let json = row.try_get::<_, Option<serde_json::Value>>(idx)?;
+            json.unwrap_or(serde_json::Value::Null)
+        }
+        Type::BYTEA => {
+            let bytes = row.try_get::<_, Option<Vec<u8>>>(idx)?;
+            match bytes {
+                Some(bytes) => serde_json::Value::String(STANDARD.encode(bytes)),
+                None => serde_json::Value::Null,
+            }
+        }
+        Type::DATE => {
+            let value = row.try_get::<_, Option<chrono::NaiveDate>>(idx)?;
+            option_string_to_json(value.map(|v| v.to_string()))
+        }
+        Type::TIME => {
+            let value = row.try_get::<_, Option<chrono::NaiveTime>>(idx)?;
+            option_string_to_json(value.map(|v| v.to_string()))
+        }
+        Type::TIMESTAMP => {
+            let value = row.try_get::<_, Option<chrono::NaiveDateTime>>(idx)?;
+            option_string_to_json(value.map(|v| v.to_string()))
+        }
+        Type::TIMESTAMPTZ => {
+            let value = row.try_get::<_, Option<chrono::DateTime<chrono::Utc>>>(idx)?;
+            option_string_to_json(value.map(|v| v.to_rfc3339()))
+        }
+        Type::UUID | Type::INET | Type::CIDR | Type::MACADDR | Type::MACADDR8 | Type::OID => {
+            option_string_to_json(row.try_get::<_, Option<String>>(idx)?)
+        }
+        _ => postgres_fallback_to_json(row, idx, ty)?,
+    };
+
+    Ok(value)
+}
+
+/// Convert mysql values into JSON-compatible values.
+fn mysql_value_to_json(value: mysql::Value) -> serde_json::Value {
+    match value {
+        mysql::Value::NULL => serde_json::Value::Null,
+        mysql::Value::Bytes(bytes) => match String::from_utf8(bytes.clone()) {
+            Ok(text) => serde_json::Value::String(text),
+            Err(_) => serde_json::Value::String(STANDARD.encode(bytes)),
+        },
+        mysql::Value::Int(value) => serde_json::Value::Number(value.into()),
+        mysql::Value::UInt(value) => serde_json::Value::Number(value.into()),
+        mysql::Value::Float(value) => option_f64_to_json(Some(f64::from(value))),
+        mysql::Value::Double(value) => option_f64_to_json(Some(value)),
+        mysql::Value::Date(year, month, day, hour, minute, second, micro) => {
+            let text = format!(
+                "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:06}Z",
+                year, month, day, hour, minute, second, micro
+            );
+            serde_json::Value::String(text)
+        }
+        mysql::Value::Time(negative, days, hours, minutes, seconds, micro) => {
+            let sign = if negative { "-" } else { "" };
+            let text = format!(
+                "{}{:03}:{:02}:{:02}.{:06}",
+                sign,
+                days * 24 + u32::from(hours),
+                minutes,
+                seconds,
+                micro
+            );
+            serde_json::Value::String(text)
+        }
+    }
+}
+
+/// Fallback conversion for postgres types without a direct mapping.
+fn postgres_fallback_to_json(
+    row: &postgres::Row,
+    idx: usize,
+    ty: &postgres::types::Type,
+) -> Result<serde_json::Value, DriverError> {
+    if let Ok(value) = row.try_get::<_, Option<String>>(idx) {
+        return Ok(option_string_to_json(value));
+    }
+
+    if let Ok(value) = row.try_get::<_, Option<Vec<u8>>>(idx) {
+        return Ok(match value {
+            Some(bytes) => serde_json::Value::String(STANDARD.encode(bytes)),
+            None => serde_json::Value::Null,
+        });
+    }
+
+    Err(DriverError::InvalidResponse(format!(
+        "unsupported postgres type {}",
+        ty.name()
+    )))
+}
+
+fn option_f64_to_json(value: Option<f64>) -> serde_json::Value {
+    match value {
+        Some(value) => serde_json::Number::from_f64(value)
+            .map_or(serde_json::Value::Null, serde_json::Value::Number),
+        None => serde_json::Value::Null,
+    }
+}
+
+fn option_i64_to_json(value: Option<i64>) -> serde_json::Value {
+    match value {
+        Some(value) => serde_json::Value::Number(value.into()),
+        None => serde_json::Value::Null,
+    }
+}
+
+fn option_bool_to_json(value: Option<bool>) -> serde_json::Value {
+    match value {
+        Some(value) => serde_json::Value::Bool(value),
+        None => serde_json::Value::Null,
+    }
+}
+
+fn option_string_to_json(value: Option<String>) -> serde_json::Value {
+    match value {
+        Some(value) => serde_json::Value::String(value),
+        None => serde_json::Value::Null,
     }
 }
 
@@ -452,12 +661,7 @@ fn metadata_from_source(
     source: &InputSource,
     default_content_type: &str,
 ) -> RecordMetadata {
-    metadata_with_content_type(
-        metadata,
-        None,
-        default_content_type,
-        source.filename(),
-    )
+    metadata_with_content_type(metadata, None, default_content_type, source.filename())
 }
 
 /// Fill missing metadata fields with inferred values.
@@ -468,7 +672,8 @@ fn metadata_with_content_type(
     filename: Option<String>,
 ) -> RecordMetadata {
     if metadata.content_type.is_none() {
-        metadata.content_type = inferred_content_type.or_else(|| Some(default_content_type.to_string()));
+        metadata.content_type =
+            inferred_content_type.or_else(|| Some(default_content_type.to_string()));
     }
     if metadata.filename.is_none() {
         metadata.filename = filename;
