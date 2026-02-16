@@ -1,0 +1,13 @@
+{
+  "name": "postgres-sample",
+  "version": "v1",
+  "driver": {
+    "kind": "db",
+    "db": {
+      "kind": "postgres",
+      "connection": "host=localhost user=app password=secret dbname=ops",
+      "query": "SELECT * FROM defect_events"
+    }
+  },
+  "payload_format": "json"
+}

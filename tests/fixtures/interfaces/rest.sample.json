@@ -1,0 +1,18 @@
+{
+  "name": "rest-sample",
+  "version": "v1",
+  "driver": {
+    "kind": "rest",
+    "rest": {
+      "url": "https://api.example.com/events",
+      "method": "GET",
+      "headers": {
+        "Authorization": "Bearer <token>"
+      },
+      "timeout_ms": 5000,
+      "response_format": "json",
+      "items_pointer": "/items"
+    }
+  },
+  "payload_format": "json"
+}

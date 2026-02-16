@@ -1,0 +1,13 @@
+{
+  "name": "mysql-sample",
+  "version": "v1",
+  "driver": {
+    "kind": "db",
+    "db": {
+      "kind": "mysql",
+      "connection": "mysql://app:secret@localhost:3306/ops",
+      "query": "SELECT * FROM defect_events"
+    }
+  },
+  "payload_format": "json"
+}
