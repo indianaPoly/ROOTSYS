@@ -3,6 +3,7 @@ resolver = "2"
 members = [
   "crates/common",
   "crates/drivers",
+  "crates/fabric",
   "crates/runtime",
   "crates/shell",
 ]
