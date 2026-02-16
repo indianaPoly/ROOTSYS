@@ -5,17 +5,19 @@ This repository implements the first stage of the data integration pipeline desc
 The goal is to connect external systems with unknown or inconsistent schemas and normalize them into a
 stable integration record stream without forcing a fixed payload schema.
 
-The pipeline works in two steps:
+The pipeline works in three steps:
 1. **Driver** fetches raw data from an external system (file, REST, or DB).
 2. **Integration pipeline** validates minimal contract rules and emits:
    - `IntegrationRecord` for accepted payloads
    - `DeadLetter` for rejected payloads
+3. **Fabric merge** combines multiple integration outputs into one dataset.
 
 ## Current Structure
 - `crates/common`: Shared data structures (`Payload`, `IntegrationRecord`, `DeadLetter`, `PayloadFormat`).
 - `crates/drivers`: External system drivers (file, REST, DB).
 - `crates/runtime`: Interface definition + integration pipeline logic.
 - `crates/shell`: CLI runner for the pipeline.
+- `crates/fabric`: Merge layer that combines multiple integration outputs.
 
 ## What Was Implemented
 - **Opaque input support** using `Payload::Binary` (base64 encoded) to preserve unstructured data.
@@ -23,10 +25,16 @@ The pipeline works in two steps:
 - **Drivers**:
   - File drivers: `jsonl`, `text`, `binary`
   - REST driver: basic GET/POST with headers and optional body
-  - DB driver: **sqlite only** (postgres/mysql configs are parsed but not implemented)
+  - DB driver: `sqlite`, `postgres`, `mysql`
 - **DLQ (dead letter) handling** for payloads that fail validation.
+- **Merge layer** to combine multiple pipeline outputs with optional dedupe.
 
 ## How To Run
+### Create sample DBs (fixtures)
+```bash
+python3 scripts/create_sample_dbs.py
+```
+
 ### File-based input (JSONL)
 ```bash
 cargo run -p shell -- \
@@ -54,8 +62,35 @@ cargo run -p shell -- \
 ### DB input (sqlite)
 ```bash
 cargo run -p shell -- \
-  --interface path/to/db-interface.json \
-  --output path/to/output.jsonl
+  --interface tests/fixtures/interfaces/mes.db.json \
+  --output /tmp/mes.output.jsonl
+```
+
+```bash
+cargo run -p shell -- \
+  --interface tests/fixtures/interfaces/qms.db.json \
+  --output /tmp/qms.output.jsonl
+```
+
+### DB input (postgres/mysql)
+```bash
+cargo run -p shell -- \
+  --interface path/to/postgres.interface.json \
+  --output /tmp/postgres.output.jsonl
+```
+
+```bash
+cargo run -p shell -- \
+  --interface path/to/mysql.interface.json \
+  --output /tmp/mysql.output.jsonl
+```
+
+### Merge integration outputs
+```bash
+cargo run -p fabric -- \
+  --inputs /tmp/mes.output.jsonl /tmp/qms.output.jsonl \
+  --output /tmp/merged.output.jsonl \
+  --dedupe true
 ```
 
 ## Interface Definition (External System)
@@ -97,7 +132,7 @@ The interface JSON drives the pipeline. Example:
 - `items_pointer` is optional. If it points to a JSON array, one record is created per element.
 - If `response_format` is `unknown`, the driver tries JSON, then UTF-8 text, then falls back to binary.
 
-### Driver: DB (sqlite only)
+### Driver: DB (sqlite)
 ```json
 {
   "name": "local-db",
@@ -116,14 +151,49 @@ The interface JSON drives the pipeline. Example:
 - Each row becomes a JSON object where keys are column names.
 - Blob columns are base64 encoded.
 
+### Driver: DB (postgres/mysql)
+```json
+{
+  "name": "ops-db",
+  "version": "v1",
+  "driver": {
+    "kind": "db",
+    "db": {
+      "kind": "postgres",
+      "connection": "host=localhost user=app password=secret dbname=ops",
+      "query": "SELECT * FROM defect_events"
+    }
+  },
+  "payload_format": "json"
+}
+```
+```json
+{
+  "name": "ops-db",
+  "version": "v1",
+  "driver": {
+    "kind": "db",
+    "db": {
+      "kind": "mysql",
+      "connection": "mysql://app:secret@localhost:3306/ops",
+      "query": "SELECT * FROM defect_events"
+    }
+  },
+  "payload_format": "json"
+}
+```
+
 ## Output Records
 - `IntegrationRecord` retains the raw payload plus metadata and pipeline annotations.
 - `DeadLetter` retains the raw payload plus validation errors.
+## Merge Output
+- The merge layer outputs the same `IntegrationRecord` JSONL format.
+- When dedupe is enabled, it removes duplicates by `(source, interface.name, interface.version, record_id)`.
 
 ## Next Steps (Planned)
 1. Add REST auth helpers (OAuth, API keys) and pagination.
-2. Implement DB drivers for postgres/mysql.
-3. Add retry/backoff and circuit breaker policies for REST/DB drivers.
+2. Add retry/backoff and circuit breaker policies for REST/DB drivers.
+3. Add connection pooling and TLS options for DB drivers.
 4. Persist DLQ to external storage (S3, DB, queue).
 5. Add schema registry or contract versioning enforcement.
 6. Add streaming drivers (Kafka, CDC) and scheduler integration.
