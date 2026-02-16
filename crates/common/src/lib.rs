@@ -28,10 +28,7 @@ pub enum PayloadFormat {
 pub enum Payload {
     Json(Value),
     Text(String),
-    Binary {
-        encoding: String,
-        data: String,
-    },
+    Binary { encoding: String, data: String },
 }
 
 impl Payload {
