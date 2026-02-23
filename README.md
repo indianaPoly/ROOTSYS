@@ -154,18 +154,23 @@ The interface JSON drives the pipeline. Example:
 ```
 - `items_pointer` is optional. If it points to a JSON array, one record is created per element.
 - If `response_format` is `unknown`, the driver tries JSON, then UTF-8 text, then falls back to binary.
+- Safe default request timeout is `5000ms` when `timeout_ms` is omitted.
 - API key auth supports `in: "header"` and `in: "query"` injection modes.
 - OAuth2 client-credentials auth is supported via `auth.kind = "oauth2_client_credentials"` with
   `token_url`, `client_id`, `client_secret`, and optional `scope`.
 - OAuth2 access tokens are cached in-memory and refreshed before expiry.
 - Cursor pagination is supported via `pagination.kind = "cursor"`.
 - Page/page_size pagination is supported via `pagination.kind = "page"`.
+- Safe default page cap is `100` requests when pagination `max_pages` is omitted.
 - Cursor record emission rules:
   - `items_pointer` points to an array -> emit one record per item.
   - `items_pointer` omitted or non-array target -> emit one record per page payload.
 - Page/page_size record emission rules:
   - `items_pointer` points to an array -> emit one record per item.
   - emission stops when a page emits zero records, or `max_pages` is reached.
+- Rate-limit policy notes:
+  - 429/status-based retry is not automatically applied in the driver yet.
+  - Use conservative `page_size`, explicit `max_pages`, and endpoint-side quotas for safe operation.
 
 OAuth2 example:
 ```json
