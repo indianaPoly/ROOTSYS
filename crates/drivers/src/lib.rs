@@ -16,12 +16,16 @@ const DEFAULT_REST_RETRY_MAX_ATTEMPTS: u32 = 3;
 const DEFAULT_REST_RETRY_BASE_DELAY_MS: u64 = 100;
 const DEFAULT_REST_RETRY_MAX_DELAY_MS: u64 = 2_000;
 const DEFAULT_REST_RETRY_JITTER_PERCENT: u32 = 20;
+const DEFAULT_REST_CIRCUIT_FAILURE_THRESHOLD: u32 = 5;
+const DEFAULT_REST_CIRCUIT_OPEN_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_DB_POOL_MIN_CONNECTIONS: u32 = 1;
 const DEFAULT_DB_POOL_MAX_CONNECTIONS: u32 = 10;
 const DEFAULT_DB_RETRY_MAX_ATTEMPTS: u32 = 3;
 const DEFAULT_DB_RETRY_BASE_DELAY_MS: u64 = 100;
 const DEFAULT_DB_RETRY_MAX_DELAY_MS: u64 = 2_000;
 const DEFAULT_DB_RETRY_JITTER_PERCENT: u32 = 20;
+const DEFAULT_DB_CIRCUIT_FAILURE_THRESHOLD: u32 = 5;
+const DEFAULT_DB_CIRCUIT_OPEN_TIMEOUT_MS: u64 = 30_000;
 
 /// Errors returned while fetching data from external systems.
 #[derive(Debug, Error)]
@@ -47,6 +51,122 @@ pub enum DriverError {
     Mysql(#[from] mysql::Error),
     #[error("unsupported db kind: {0}")]
     UnsupportedDbKind(String),
+    #[error("circuit breaker is open for {driver}")]
+    CircuitBreakerOpen { driver: String },
+}
+
+#[derive(Debug, Clone)]
+pub struct CircuitBreakerConfig {
+    pub failure_threshold: Option<u32>,
+    pub open_timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CircuitState {
+    Closed { consecutive_failures: u32 },
+    Open { opened_at: Instant },
+    HalfOpen,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CircuitBreaker {
+    failure_threshold: u32,
+    open_timeout: Duration,
+    state: CircuitState,
+}
+
+impl CircuitBreaker {
+    fn new(
+        config: &CircuitBreakerConfig,
+        default_failure_threshold: u32,
+        default_open_timeout_ms: u64,
+    ) -> Self {
+        let failure_threshold = config
+            .failure_threshold
+            .unwrap_or(default_failure_threshold)
+            .max(1);
+        let open_timeout_ms = config
+            .open_timeout_ms
+            .unwrap_or(default_open_timeout_ms)
+            .max(1);
+
+        Self {
+            failure_threshold,
+            open_timeout: Duration::from_millis(open_timeout_ms),
+            state: CircuitState::Closed {
+                consecutive_failures: 0,
+            },
+        }
+    }
+
+    fn allow_call(&mut self) -> bool {
+        match self.state {
+            CircuitState::Closed { .. } | CircuitState::HalfOpen => true,
+            CircuitState::Open { opened_at } => {
+                if Instant::now().saturating_duration_since(opened_at) >= self.open_timeout {
+                    self.state = CircuitState::HalfOpen;
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
+    fn on_success(&mut self) {
+        self.state = CircuitState::Closed {
+            consecutive_failures: 0,
+        };
+    }
+
+    fn on_failure(&mut self) {
+        self.state = match self.state {
+            CircuitState::Closed {
+                consecutive_failures,
+            } => {
+                let next_failures = consecutive_failures.saturating_add(1);
+                if next_failures >= self.failure_threshold {
+                    CircuitState::Open {
+                        opened_at: Instant::now(),
+                    }
+                } else {
+                    CircuitState::Closed {
+                        consecutive_failures: next_failures,
+                    }
+                }
+            }
+            CircuitState::HalfOpen | CircuitState::Open { .. } => CircuitState::Open {
+                opened_at: Instant::now(),
+            },
+        };
+    }
+}
+
+fn ensure_circuit_allows_call(
+    circuit: &mut Option<CircuitBreaker>,
+    driver_name: &str,
+) -> Result<(), DriverError> {
+    if let Some(circuit) = circuit.as_mut() {
+        if !circuit.allow_call() {
+            return Err(DriverError::CircuitBreakerOpen {
+                driver: driver_name.to_string(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn record_circuit_success(circuit: &mut Option<CircuitBreaker>) {
+    if let Some(circuit) = circuit.as_mut() {
+        circuit.on_success();
+    }
+}
+
+fn record_circuit_failure(circuit: &mut Option<CircuitBreaker>) {
+    if let Some(circuit) = circuit.as_mut() {
+        circuit.on_failure();
+    }
 }
 
 /// Input source for file-based drivers.
@@ -237,6 +357,7 @@ pub struct RestConfig {
     pub oauth2_auth: Option<OAuth2ClientCredentialsAuthConfig>,
     pub pagination: Option<RestPaginationConfig>,
     pub retry: Option<RestRetryConfig>,
+    pub circuit_breaker: Option<CircuitBreakerConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -317,15 +438,25 @@ pub struct RestDriver {
     config: RestConfig,
     metadata: RecordMetadata,
     cached_bearer_token: Option<CachedBearerToken>,
+    circuit_breaker: Option<CircuitBreaker>,
 }
 
 impl RestDriver {
     /// Create a REST driver with the given configuration.
     pub fn new(config: RestConfig, metadata: RecordMetadata) -> Self {
+        let circuit_breaker = config.circuit_breaker.as_ref().map(|cfg| {
+            CircuitBreaker::new(
+                cfg,
+                DEFAULT_REST_CIRCUIT_FAILURE_THRESHOLD,
+                DEFAULT_REST_CIRCUIT_OPEN_TIMEOUT_MS,
+            )
+        });
+
         Self {
             config,
             metadata,
             cached_bearer_token: None,
+            circuit_breaker,
         }
     }
 
@@ -427,6 +558,18 @@ impl RestDriver {
         }
     }
 
+    fn ensure_circuit_allows_call(&mut self) -> Result<(), DriverError> {
+        ensure_circuit_allows_call(&mut self.circuit_breaker, "rest")
+    }
+
+    fn record_circuit_success(&mut self) {
+        record_circuit_success(&mut self.circuit_breaker);
+    }
+
+    fn record_circuit_failure(&mut self) {
+        record_circuit_failure(&mut self.circuit_breaker);
+    }
+
     fn delay_with_backoff_and_jitter_ms(
         attempt_index: u32,
         base_delay_ms: u64,
@@ -516,6 +659,8 @@ impl RestDriver {
         agent: &ureq::Agent,
         cursor_query: Option<(&str, &str)>,
     ) -> Result<(Vec<u8>, Option<String>), DriverError> {
+        self.ensure_circuit_allows_call()?;
+
         let method = self
             .config
             .method
@@ -580,8 +725,12 @@ impl RestDriver {
 
         for attempt in 1..=policy.max_attempts {
             match self.execute_rest_call_once(agent, cursor_query) {
-                Ok(result) => return Ok(result),
+                Ok(result) => {
+                    self.record_circuit_success();
+                    return Ok(result);
+                }
                 Err(error) if attempt < policy.max_attempts && Self::should_retry_error(&error) => {
+                    self.record_circuit_failure();
                     let delay_ms = Self::delay_with_backoff_and_jitter_ms(
                         attempt - 1,
                         policy.base_delay_ms,
@@ -590,7 +739,10 @@ impl RestDriver {
                     );
                     std::thread::sleep(Duration::from_millis(delay_ms));
                 }
-                Err(error) => return Err(error),
+                Err(error) => {
+                    self.record_circuit_failure();
+                    return Err(error);
+                }
             }
         }
 
@@ -701,6 +853,8 @@ impl RestDriver {
             let mut result: Option<(Vec<u8>, Option<String>)> = None;
 
             for attempt in 1..=policy.max_attempts {
+                self.ensure_circuit_allows_call()?;
+
                 let mut request = agent.request(&method, &self.config.url);
                 request = request.query(&page_cfg.page_param, &page_value);
                 request = request.query(&page_cfg.page_size_param, &page_size_value);
@@ -736,6 +890,7 @@ impl RestDriver {
                         let body = response.into_string().unwrap_or_default();
                         let error = DriverError::HttpStatus { status, body };
                         if attempt < policy.max_attempts && Self::should_retry_error(&error) {
+                            self.record_circuit_failure();
                             let delay_ms = Self::delay_with_backoff_and_jitter_ms(
                                 attempt - 1,
                                 policy.base_delay_ms,
@@ -746,11 +901,13 @@ impl RestDriver {
                             last_error = Some(error);
                             continue;
                         }
+                        self.record_circuit_failure();
                         return Err(error);
                     }
                     Err(err) => {
                         let error = DriverError::Http(err);
                         if attempt < policy.max_attempts && Self::should_retry_error(&error) {
+                            self.record_circuit_failure();
                             let delay_ms = Self::delay_with_backoff_and_jitter_ms(
                                 attempt - 1,
                                 policy.base_delay_ms,
@@ -761,6 +918,7 @@ impl RestDriver {
                             last_error = Some(error);
                             continue;
                         }
+                        self.record_circuit_failure();
                         return Err(error);
                     }
                 };
@@ -770,6 +928,7 @@ impl RestDriver {
                     .map(|value| value.to_string());
                 let mut bytes = Vec::new();
                 response.into_reader().read_to_end(&mut bytes)?;
+                self.record_circuit_success();
                 result = Some((bytes, content_type));
                 break;
             }
@@ -825,7 +984,10 @@ impl RestDriver {
 
 #[cfg(test)]
 mod tests {
-    use super::{delay_with_backoff_and_jitter_ms, is_retryable_db_error, DriverError, RestDriver};
+    use super::{
+        delay_with_backoff_and_jitter_ms, ensure_circuit_allows_call, is_retryable_db_error,
+        CircuitBreaker, CircuitBreakerConfig, CircuitState, DriverError, RestDriver,
+    };
 
     #[test]
     fn backoff_grows_exponentially_without_jitter() {
@@ -885,6 +1047,58 @@ mod tests {
         let driver_err = DriverError::Db(sqlite_err);
         assert!(!is_retryable_db_error(&driver_err));
     }
+
+    #[test]
+    fn circuit_breaker_opens_after_threshold_failures() {
+        let config = CircuitBreakerConfig {
+            failure_threshold: Some(2),
+            open_timeout_ms: Some(100),
+        };
+        let mut breaker = CircuitBreaker::new(&config, 5, 30_000);
+
+        breaker.on_failure();
+        assert!(matches!(
+            breaker.state,
+            CircuitState::Closed {
+                consecutive_failures: 1
+            }
+        ));
+
+        breaker.on_failure();
+        assert!(matches!(breaker.state, CircuitState::Open { .. }));
+    }
+
+    #[test]
+    fn circuit_breaker_moves_to_half_open_after_timeout() {
+        let config = CircuitBreakerConfig {
+            failure_threshold: Some(1),
+            open_timeout_ms: Some(1),
+        };
+        let mut breaker = CircuitBreaker::new(&config, 5, 30_000);
+        breaker.on_failure();
+
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        assert!(breaker.allow_call());
+        assert!(matches!(breaker.state, CircuitState::HalfOpen));
+    }
+
+    #[test]
+    fn ensure_circuit_rejects_when_open() {
+        let config = CircuitBreakerConfig {
+            failure_threshold: Some(1),
+            open_timeout_ms: Some(1_000),
+        };
+        let mut circuit = Some(CircuitBreaker::new(&config, 5, 30_000));
+        if let Some(breaker) = circuit.as_mut() {
+            breaker.on_failure();
+        }
+
+        let result = ensure_circuit_allows_call(&mut circuit, "rest");
+        assert!(matches!(
+            result,
+            Err(DriverError::CircuitBreakerOpen { .. })
+        ));
+    }
 }
 
 /// Supported database kinds for DbDriver.
@@ -905,6 +1119,7 @@ pub struct DbConfig {
     pub pool_min_connections: Option<u32>,
     pub pool_max_connections: Option<u32>,
     pub retry: Option<DbRetryConfig>,
+    pub circuit_breaker: Option<CircuitBreakerConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -966,6 +1181,16 @@ fn resolved_db_retry_policy(config: &DbConfig) -> DbRetryPolicy {
         max_delay_ms,
         jitter_percent,
     }
+}
+
+fn resolved_db_circuit_breaker(config: &DbConfig) -> Option<CircuitBreaker> {
+    config.circuit_breaker.as_ref().map(|cfg| {
+        CircuitBreaker::new(
+            cfg,
+            DEFAULT_DB_CIRCUIT_FAILURE_THRESHOLD,
+            DEFAULT_DB_CIRCUIT_OPEN_TIMEOUT_MS,
+        )
+    })
 }
 
 fn delay_with_backoff_and_jitter_ms(
@@ -1037,15 +1262,25 @@ fn is_retryable_db_error(error: &DriverError) -> bool {
     }
 }
 
-fn execute_with_db_retry<T, F>(config: &DbConfig, mut op: F) -> Result<T, DriverError>
+fn execute_with_db_retry<T, F>(
+    config: &DbConfig,
+    circuit: &mut Option<CircuitBreaker>,
+    mut op: F,
+) -> Result<T, DriverError>
 where
     F: FnMut() -> Result<T, DriverError>,
 {
     let policy = resolved_db_retry_policy(config);
     for attempt in 1..=policy.max_attempts {
+        ensure_circuit_allows_call(circuit, "db")?;
+
         match op() {
-            Ok(value) => return Ok(value),
+            Ok(value) => {
+                record_circuit_success(circuit);
+                return Ok(value);
+            }
             Err(error) if attempt < policy.max_attempts && is_retryable_db_error(&error) => {
+                record_circuit_failure(circuit);
                 let delay_ms = delay_with_backoff_and_jitter_ms(
                     attempt - 1,
                     policy.base_delay_ms,
@@ -1054,7 +1289,10 @@ where
                 );
                 std::thread::sleep(Duration::from_millis(delay_ms));
             }
-            Err(error) => return Err(error),
+            Err(error) => {
+                record_circuit_failure(circuit);
+                return Err(error);
+            }
         }
     }
 
@@ -1078,10 +1316,12 @@ impl DbDriver {
 
 impl ExternalSystem for DbDriver {
     fn fetch(&mut self) -> Result<Vec<ExternalRecord>, DriverError> {
+        let mut circuit = resolved_db_circuit_breaker(&self.config);
+
         match self.config.kind {
-            DbKind::Sqlite => fetch_sqlite(&self.config, &self.metadata),
-            DbKind::Postgres => fetch_postgres(&self.config, &self.metadata),
-            DbKind::Mysql => fetch_mysql(&self.config, &self.metadata),
+            DbKind::Sqlite => fetch_sqlite(&self.config, &self.metadata, &mut circuit),
+            DbKind::Postgres => fetch_postgres(&self.config, &self.metadata, &mut circuit),
+            DbKind::Mysql => fetch_mysql(&self.config, &self.metadata, &mut circuit),
         }
     }
 }
@@ -1090,8 +1330,9 @@ impl ExternalSystem for DbDriver {
 fn fetch_sqlite(
     config: &DbConfig,
     metadata: &RecordMetadata,
+    circuit: &mut Option<CircuitBreaker>,
 ) -> Result<Vec<ExternalRecord>, DriverError> {
-    execute_with_db_retry(config, || fetch_sqlite_once(config, metadata))
+    execute_with_db_retry(config, circuit, || fetch_sqlite_once(config, metadata))
 }
 
 fn fetch_sqlite_once(
@@ -1132,8 +1373,9 @@ fn fetch_sqlite_once(
 fn fetch_postgres(
     config: &DbConfig,
     metadata: &RecordMetadata,
+    circuit: &mut Option<CircuitBreaker>,
 ) -> Result<Vec<ExternalRecord>, DriverError> {
-    execute_with_db_retry(config, || fetch_postgres_once(config, metadata))
+    execute_with_db_retry(config, circuit, || fetch_postgres_once(config, metadata))
 }
 
 fn fetch_postgres_once(
@@ -1211,8 +1453,9 @@ fn fetch_postgres_once(
 fn fetch_mysql(
     config: &DbConfig,
     metadata: &RecordMetadata,
+    circuit: &mut Option<CircuitBreaker>,
 ) -> Result<Vec<ExternalRecord>, DriverError> {
-    execute_with_db_retry(config, || fetch_mysql_once(config, metadata))
+    execute_with_db_retry(config, circuit, || fetch_mysql_once(config, metadata))
 }
 
 fn fetch_mysql_once(

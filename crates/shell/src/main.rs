@@ -7,6 +7,7 @@ use clap::ValueEnum;
 use common::PayloadFormat;
 use drivers::{
     ApiKeyAuthConfig, ApiKeyLocation, BinaryFileDriver,
+    CircuitBreakerConfig as DriverCircuitBreakerConfig,
     CursorPaginationConfig as DriverCursorPaginationConfig, DbConfig, DbDriver, DbKind,
     DbRetryConfig as DriverDbRetryConfig, ExternalSystem, InputSource, JsonlDriver,
     OAuth2ClientCredentialsAuthConfig, PagePaginationConfig as DriverPagePaginationConfig,
@@ -253,6 +254,12 @@ fn rest_config_from_interface(
             max_delay_ms: retry.max_delay_ms,
             jitter_percent: retry.jitter_percent,
         }),
+        circuit_breaker: rest.circuit_breaker.as_ref().map(|circuit_breaker| {
+            DriverCircuitBreakerConfig {
+                failure_threshold: circuit_breaker.failure_threshold,
+                open_timeout_ms: circuit_breaker.open_timeout_ms,
+            }
+        }),
     })
 }
 
@@ -287,6 +294,12 @@ fn db_config_from_interface(
             base_delay_ms: retry.base_delay_ms,
             max_delay_ms: retry.max_delay_ms,
             jitter_percent: retry.jitter_percent,
+        }),
+        circuit_breaker: db.circuit_breaker.as_ref().map(|circuit_breaker| {
+            DriverCircuitBreakerConfig {
+                failure_threshold: circuit_breaker.failure_threshold,
+                open_timeout_ms: circuit_breaker.open_timeout_ms,
+            }
         }),
     })
 }

@@ -17,6 +17,10 @@
         "base_delay_ms": 100,
         "max_delay_ms": 2000,
         "jitter_percent": 20
+      },
+      "circuit_breaker": {
+        "failure_threshold": 5,
+        "open_timeout_ms": 30000
       }
     }
   },

@@ -245,6 +245,8 @@ pub struct RestDriverConfig {
     pub pagination: Option<RestPaginationConfig>,
     #[serde(default)]
     pub retry: Option<RestRetryConfig>,
+    #[serde(default)]
+    pub circuit_breaker: Option<CircuitBreakerConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -362,6 +364,17 @@ pub struct DbDriverConfig {
     pub pool: Option<DbPoolConfig>,
     #[serde(default)]
     pub retry: Option<DbRetryConfig>,
+    #[serde(default)]
+    pub circuit_breaker: Option<CircuitBreakerConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CircuitBreakerConfig {
+    #[serde(default)]
+    pub failure_threshold: Option<u32>,
+    #[serde(default)]
+    pub open_timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -561,6 +574,33 @@ impl ExternalInterface {
                                     code: "REST_RETRY_JITTER_PERCENT_INVALID".to_string(),
                                     path: "/driver/rest/retry/jitter_percent".to_string(),
                                     message: "jitter_percent must be <= 100 when provided"
+                                        .to_string(),
+                                });
+                            }
+                        }
+                    }
+
+                    if let Some(circuit_breaker) = &rest.circuit_breaker {
+                        if let Some(failure_threshold) = circuit_breaker.failure_threshold {
+                            if failure_threshold == 0 {
+                                errors.push(ValidationError {
+                                    code: "REST_CIRCUIT_BREAKER_FAILURE_THRESHOLD_INVALID"
+                                        .to_string(),
+                                    path: "/driver/rest/circuit_breaker/failure_threshold"
+                                        .to_string(),
+                                    message: "failure_threshold must be > 0 when provided"
+                                        .to_string(),
+                                });
+                            }
+                        }
+
+                        if let Some(open_timeout_ms) = circuit_breaker.open_timeout_ms {
+                            if open_timeout_ms == 0 {
+                                errors.push(ValidationError {
+                                    code: "REST_CIRCUIT_BREAKER_OPEN_TIMEOUT_INVALID".to_string(),
+                                    path: "/driver/rest/circuit_breaker/open_timeout_ms"
+                                        .to_string(),
+                                    message: "open_timeout_ms must be > 0 when provided"
                                         .to_string(),
                                 });
                             }
@@ -953,6 +993,32 @@ impl ExternalInterface {
                                     code: "DB_RETRY_JITTER_PERCENT_INVALID".to_string(),
                                     path: "/driver/db/retry/jitter_percent".to_string(),
                                     message: "jitter_percent must be <= 100 when provided"
+                                        .to_string(),
+                                });
+                            }
+                        }
+                    }
+
+                    if let Some(circuit_breaker) = &db.circuit_breaker {
+                        if let Some(failure_threshold) = circuit_breaker.failure_threshold {
+                            if failure_threshold == 0 {
+                                errors.push(ValidationError {
+                                    code: "DB_CIRCUIT_BREAKER_FAILURE_THRESHOLD_INVALID"
+                                        .to_string(),
+                                    path: "/driver/db/circuit_breaker/failure_threshold"
+                                        .to_string(),
+                                    message: "failure_threshold must be > 0 when provided"
+                                        .to_string(),
+                                });
+                            }
+                        }
+
+                        if let Some(open_timeout_ms) = circuit_breaker.open_timeout_ms {
+                            if open_timeout_ms == 0 {
+                                errors.push(ValidationError {
+                                    code: "DB_CIRCUIT_BREAKER_OPEN_TIMEOUT_INVALID".to_string(),
+                                    path: "/driver/db/circuit_breaker/open_timeout_ms".to_string(),
+                                    message: "open_timeout_ms must be > 0 when provided"
                                         .to_string(),
                                 });
                             }
@@ -1759,6 +1825,56 @@ mod tests {
     }
 
     #[test]
+    fn errors_when_rest_circuit_breaker_fields_are_invalid() {
+        let json = r#"{
+            "name": "rest-circuit",
+            "version": "v1",
+            "driver": {
+                "kind": "rest",
+                "rest": {
+                    "url": "https://api.example.com/events",
+                    "circuit_breaker": {
+                        "failure_threshold": 0,
+                        "open_timeout_ms": 0
+                    }
+                }
+            }
+        }"#;
+
+        let interface: ExternalInterface = serde_json::from_str(json).unwrap();
+        let errors = interface.validate().unwrap_err();
+        assert!(has_code(
+            &errors,
+            "REST_CIRCUIT_BREAKER_FAILURE_THRESHOLD_INVALID"
+        ));
+        assert!(has_code(
+            &errors,
+            "REST_CIRCUIT_BREAKER_OPEN_TIMEOUT_INVALID"
+        ));
+    }
+
+    #[test]
+    fn rest_circuit_breaker_valid_config_passes_validation() {
+        let json = r#"{
+            "name": "rest-circuit",
+            "version": "v1",
+            "driver": {
+                "kind": "rest",
+                "rest": {
+                    "url": "https://api.example.com/events",
+                    "circuit_breaker": {
+                        "failure_threshold": 5,
+                        "open_timeout_ms": 30000
+                    }
+                }
+            }
+        }"#;
+
+        let interface: ExternalInterface = serde_json::from_str(json).unwrap();
+        interface.validate().unwrap();
+    }
+
+    #[test]
     fn errors_when_postgres_tls_mode_used_for_non_postgres_db() {
         let json = r#"{
             "name": "db-sample",
@@ -1943,6 +2059,57 @@ mod tests {
                         "base_delay_ms": 100,
                         "max_delay_ms": 2000,
                         "jitter_percent": 20
+                    }
+                }
+            }
+        }"#;
+
+        let interface: ExternalInterface = serde_json::from_str(json).unwrap();
+        interface.validate().unwrap();
+    }
+
+    #[test]
+    fn errors_when_db_circuit_breaker_fields_are_invalid() {
+        let json = r#"{
+            "name": "db-circuit",
+            "version": "v1",
+            "driver": {
+                "kind": "db",
+                "db": {
+                    "kind": "postgres",
+                    "connection": "host=localhost user=app password=secret dbname=ops",
+                    "query": "select 1",
+                    "circuit_breaker": {
+                        "failure_threshold": 0,
+                        "open_timeout_ms": 0
+                    }
+                }
+            }
+        }"#;
+
+        let interface: ExternalInterface = serde_json::from_str(json).unwrap();
+        let errors = interface.validate().unwrap_err();
+        assert!(has_code(
+            &errors,
+            "DB_CIRCUIT_BREAKER_FAILURE_THRESHOLD_INVALID"
+        ));
+        assert!(has_code(&errors, "DB_CIRCUIT_BREAKER_OPEN_TIMEOUT_INVALID"));
+    }
+
+    #[test]
+    fn db_circuit_breaker_valid_config_passes_validation() {
+        let json = r#"{
+            "name": "db-circuit",
+            "version": "v1",
+            "driver": {
+                "kind": "db",
+                "db": {
+                    "kind": "mysql",
+                    "connection": "mysql://app:secret@localhost:3306/ops",
+                    "query": "select 1",
+                    "circuit_breaker": {
+                        "failure_threshold": 5,
+                        "open_timeout_ms": 30000
                     }
                 }
             }
