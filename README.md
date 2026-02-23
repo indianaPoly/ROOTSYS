@@ -200,7 +200,11 @@ The interface JSON drives the pipeline. Example:
 
 ## Output Records
 - `IntegrationRecord` retains the raw payload plus metadata and pipeline annotations.
-- `DeadLetter` retains the raw payload plus validation errors.
+- `IntegrationRecord.warnings` and `DeadLetter.errors` are structured messages:
+  - `code`: machine-readable error/warning code
+  - `path`: optional JSON path/pointer context
+  - `message`: human-readable detail
+- `DeadLetter` retains the raw payload plus structured validation errors.
 ## Merge Output
 - The merge layer outputs the same `IntegrationRecord` JSONL format.
 - When dedupe is enabled, it removes duplicates by `(source, interface.name, interface.version, record_id)`.

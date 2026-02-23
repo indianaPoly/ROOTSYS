@@ -35,7 +35,7 @@ Use it as the source of truth for priorities, and mirror each item into GitHub I
 - [ ] Roadmap(A1-1): Define + validate ExternalInterface JSON schema (strict field validation)
 - [x] Roadmap(A1-2): Add contract registry and enforce (interface.name, interface.version) allowlist
 - [x] Roadmap(A1-3): Add record_id policy mode (strict vs hash fallback) and document behavior
-- [ ] Roadmap(A1-4): Improve validation reporting (structured error codes vs free-form strings)
+- [x] Roadmap(A1-4): Improve validation reporting (structured error codes vs free-form strings)
 
 ## A2. Drivers (REST/DB/File) Productionization
 - [ ] Roadmap(A2-1): REST auth helper: API key (header/query) injection policy
