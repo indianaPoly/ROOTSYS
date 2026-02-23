@@ -61,7 +61,7 @@ Use it as the source of truth for priorities, and mirror each item into GitHub I
 
 ## A5. Streaming + Scheduling
 - [x] Roadmap(A5-1): Choose first streaming source (Kafka vs CDC) and define minimal interface
-- [ ] Roadmap(A5-2): Implement streaming driver MVP (records → IntegrationPipeline)
+- [x] Roadmap(A5-2): Implement streaming driver MVP (records → IntegrationPipeline)
 - [ ] Roadmap(A5-3): Implement scheduler integration (when/how interfaces run)
 - [ ] Roadmap(A5-4): Add checkpoint/offset management strategy for streaming
 

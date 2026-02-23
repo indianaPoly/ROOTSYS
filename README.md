@@ -26,6 +26,7 @@ The pipeline works in three steps:
   - File drivers: `jsonl`, `text`, `binary`
   - REST driver: basic GET/POST with headers and optional body
   - DB driver: `sqlite`, `postgres`, `mysql`
+  - Stream driver MVP: `stream.kafka` (fixture-backed input via `mvp_input`)
 - **DLQ (dead letter) handling** with a pluggable sink interface (file sink implemented by default).
 - **Merge layer** to combine multiple pipeline outputs with optional dedupe.
 
@@ -91,6 +92,17 @@ cargo run -p shell -- \
   --contract-registry system/contracts/reference/allowlist.json \
   --output /tmp/mysql.output.jsonl
 ```
+
+### Stream input (Kafka MVP)
+```bash
+cargo run -p shell -- \
+  --interface tests/fixtures/interfaces/stream.kafka.sample.json \
+  --contract-registry system/contracts/reference/allowlist.json \
+  --output /tmp/stream.output.jsonl
+```
+
+- Current MVP behavior: `driver.stream.kafka.mvp_input` is consumed as the stream source.
+- This keeps payload normalization identical to other drivers while streaming runtime semantics evolve.
 
 ### Merge integration outputs
 ```bash
