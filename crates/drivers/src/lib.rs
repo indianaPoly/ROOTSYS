@@ -10,6 +10,9 @@ use common::{ExternalRecord, Payload, PayloadFormat, RecordMetadata};
 use mysql::prelude::Queryable;
 use thiserror::Error;
 
+const DEFAULT_REST_TIMEOUT_MS: u64 = 5_000;
+const DEFAULT_REST_MAX_PAGES: u32 = 100;
+
 /// Errors returned while fetching data from external systems.
 #[derive(Debug, Error)]
 pub enum DriverError {
@@ -354,15 +357,12 @@ impl RestDriver {
 
 impl ExternalSystem for RestDriver {
     fn fetch(&mut self) -> Result<Vec<ExternalRecord>, DriverError> {
-        let agent = if let Some(timeout_ms) = self.config.timeout_ms {
-            let duration = Duration::from_millis(timeout_ms);
-            ureq::AgentBuilder::new()
-                .timeout_read(duration)
-                .timeout_write(duration)
-                .build()
-        } else {
-            ureq::Agent::new()
-        };
+        let timeout_ms = self.config.timeout_ms.unwrap_or(DEFAULT_REST_TIMEOUT_MS);
+        let duration = Duration::from_millis(timeout_ms);
+        let agent = ureq::AgentBuilder::new()
+            .timeout_read(duration)
+            .timeout_write(duration)
+            .build();
 
         if let Some(pagination) = self.config.pagination.clone() {
             match pagination.kind {
@@ -477,12 +477,11 @@ impl RestDriver {
         let mut records = Vec::new();
         let mut next_cursor = cursor.initial_cursor.clone();
         let mut pages = 0u32;
+        let max_pages = cursor.max_pages.unwrap_or(DEFAULT_REST_MAX_PAGES);
 
         loop {
-            if let Some(max_pages) = cursor.max_pages {
-                if pages >= max_pages {
-                    break;
-                }
+            if pages >= max_pages {
+                break;
             }
 
             let query = next_cursor
@@ -547,12 +546,11 @@ impl RestDriver {
         let mut records = Vec::new();
         let mut page = page_cfg.initial_page.unwrap_or(1);
         let mut pages = 0u32;
+        let max_pages = page_cfg.max_pages.unwrap_or(DEFAULT_REST_MAX_PAGES);
 
         loop {
-            if let Some(max_pages) = page_cfg.max_pages {
-                if pages >= max_pages {
-                    break;
-                }
+            if pages >= max_pages {
+                break;
             }
 
             let method = self
