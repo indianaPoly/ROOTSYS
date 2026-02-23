@@ -2,6 +2,7 @@ use std::error::Error;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::PathBuf;
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
@@ -44,6 +45,12 @@ struct Args {
     dlq_table: String,
     #[arg(long)]
     source: Option<String>,
+    #[arg(long, value_enum, default_value_t = ScheduleMode::Once)]
+    schedule_mode: ScheduleMode,
+    #[arg(long)]
+    interval_seconds: Option<u64>,
+    #[arg(long)]
+    max_runs: Option<u32>,
     #[arg(long)]
     replay_dlq: Option<PathBuf>,
     #[arg(long, value_enum, default_value_t = DlqSinkKind::File)]
@@ -70,8 +77,20 @@ enum DlqSinkKind {
     Sqlite,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+enum ScheduleMode {
+    Once,
+    Interval,
+}
+
+struct ResolvedSchedule {
+    interval_seconds: Option<u64>,
+    max_runs: u32,
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+    let schedule = resolve_schedule(&args)?;
 
     let interface = ExternalInterface::load(&args.interface)?;
     let contract_registry = ContractRegistry::load(&args.contract_registry)?;
@@ -88,31 +107,85 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         InputFormat::Binary => DriverKind::Binary,
     };
 
-    let metadata = metadata_from_interface(&interface);
-    let records = if let Some(replay_dlq_path) = &args.replay_dlq {
-        load_replay_records(&args, replay_dlq_path)?
-    } else {
-        let mut driver = build_external_driver(&args, &interface, driver_kind, metadata)?;
-        driver.fetch()?
-    };
+    let dlq_sink = build_dlq_sink(&args);
+    let mut total_records = 0usize;
+    let mut total_dead_letters = 0usize;
 
-    let pipeline = IntegrationPipeline::new(interface);
-    let outcome = pipeline.integrate(&source, records);
+    for run_idx in 0..schedule.max_runs {
+        let metadata = metadata_from_interface(&interface);
+        let records = if let Some(replay_dlq_path) = &args.replay_dlq {
+            load_replay_records(&args, replay_dlq_path)?
+        } else {
+            let mut driver = build_external_driver(&args, &interface, driver_kind, metadata)?;
+            driver.fetch()?
+        };
 
-    write_jsonl(&args.output, &outcome.records)?;
+        let pipeline = IntegrationPipeline::new(interface.clone());
+        let outcome = pipeline.integrate(&source, records);
 
-    if !outcome.dead_letters.is_empty() {
-        let dlq_sink = build_dlq_sink(&args);
-        dlq_sink.write(&outcome.dead_letters)?;
+        let append = run_idx > 0;
+        write_jsonl(&args.output, &outcome.records, append)?;
+
+        if !outcome.dead_letters.is_empty() {
+            dlq_sink.write(&outcome.dead_letters, append)?;
+        }
+
+        total_records += outcome.records.len();
+        total_dead_letters += outcome.dead_letters.len();
+
+        println!(
+            "run {}: records={} | dead_letters={}",
+            run_idx + 1,
+            outcome.records.len(),
+            outcome.dead_letters.len()
+        );
+
+        if let Some(interval_seconds) = schedule.interval_seconds {
+            if run_idx + 1 < schedule.max_runs {
+                thread::sleep(std::time::Duration::from_secs(interval_seconds));
+            }
+        }
     }
 
     println!(
-        "records: {} | dead_letters: {}",
-        outcome.records.len(),
-        outcome.dead_letters.len()
+        "total runs: {} | total records: {} | total dead_letters: {}",
+        schedule.max_runs, total_records, total_dead_letters
     );
 
     Ok(())
+}
+
+fn resolve_schedule(args: &Args) -> Result<ResolvedSchedule, Box<dyn Error>> {
+    match args.schedule_mode {
+        ScheduleMode::Once => {
+            if args.interval_seconds.is_some() || args.max_runs.is_some() {
+                return Err(
+                    "--interval-seconds/--max-runs are only valid with --schedule-mode interval"
+                        .into(),
+                );
+            }
+
+            Ok(ResolvedSchedule {
+                interval_seconds: None,
+                max_runs: 1,
+            })
+        }
+        ScheduleMode::Interval => {
+            let interval_seconds = args
+                .interval_seconds
+                .filter(|value| *value > 0)
+                .ok_or("--interval-seconds must be > 0 when --schedule-mode interval")?;
+            let max_runs = args
+                .max_runs
+                .filter(|value| *value > 0)
+                .ok_or("--max-runs must be > 0 when --schedule-mode interval")?;
+
+            Ok(ResolvedSchedule {
+                interval_seconds: Some(interval_seconds),
+                max_runs,
+            })
+        }
+    }
 }
 
 fn build_external_driver(
@@ -151,7 +224,7 @@ fn build_external_driver(
 }
 
 trait DlqSink {
-    fn write(&self, rows: &[common::DeadLetter]) -> Result<(), Box<dyn Error>>;
+    fn write(&self, rows: &[common::DeadLetter], append: bool) -> Result<(), Box<dyn Error>>;
 }
 
 struct FileDlqSink {
@@ -165,8 +238,8 @@ impl FileDlqSink {
 }
 
 impl DlqSink for FileDlqSink {
-    fn write(&self, rows: &[common::DeadLetter]) -> Result<(), Box<dyn Error>> {
-        write_jsonl(&self.path, rows)?;
+    fn write(&self, rows: &[common::DeadLetter], append: bool) -> Result<(), Box<dyn Error>> {
+        write_jsonl(&self.path, rows, append)?;
         Ok(())
     }
 }
@@ -216,7 +289,7 @@ impl SqliteDlqSink {
 }
 
 impl DlqSink for SqliteDlqSink {
-    fn write(&self, rows: &[common::DeadLetter]) -> Result<(), Box<dyn Error>> {
+    fn write(&self, rows: &[common::DeadLetter], _append: bool) -> Result<(), Box<dyn Error>> {
         let table = self.validated_table_name()?.to_string();
         let mut connection = rusqlite::Connection::open(&self.path)?;
         self.ensure_table(&connection)?;
@@ -502,8 +575,19 @@ fn is_valid_sqlite_identifier(value: &str) -> bool {
 }
 
 /// Write JSONL output to disk.
-fn write_jsonl<T: serde::Serialize>(path: &PathBuf, rows: &[T]) -> Result<(), std::io::Error> {
-    let file = File::create(path)?;
+fn write_jsonl<T: serde::Serialize>(
+    path: &PathBuf,
+    rows: &[T],
+    append: bool,
+) -> Result<(), std::io::Error> {
+    let file = if append {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?
+    } else {
+        File::create(path)?
+    };
     let mut writer = BufWriter::new(file);
 
     for row in rows {
@@ -725,8 +809,8 @@ fn stream_config_from_interface(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_dlq_sink, dead_letters_to_external_records, is_valid_sqlite_identifier, with_suffix,
-        Args, DlqSinkKind, InputFormat,
+        build_dlq_sink, dead_letters_to_external_records, is_valid_sqlite_identifier,
+        resolve_schedule, with_suffix, Args, DlqSinkKind, InputFormat, ScheduleMode,
     };
     use common::{
         DeadLetter, DlqLineage, InterfaceRef, Payload, RecordMetadata, ValidationMessage,
@@ -758,6 +842,9 @@ mod tests {
             dlq_sink: DlqSinkKind::Sqlite,
             dlq_table: "dead_letters".to_string(),
             source: None,
+            schedule_mode: ScheduleMode::Once,
+            interval_seconds: None,
+            max_runs: None,
             replay_dlq: None,
             replay_dlq_source: DlqSinkKind::File,
             replay_dlq_table: "dead_letters".to_string(),
@@ -832,5 +919,55 @@ mod tests {
 
         let codes = super::dedupe_reason_codes_from_errors(&errors);
         assert_eq!(codes, vec!["A".to_string(), "B".to_string()]);
+    }
+
+    #[test]
+    fn resolve_schedule_once_defaults_to_single_run() {
+        let args = Args {
+            interface: PathBuf::from("/tmp/interface.json"),
+            input: None,
+            output: PathBuf::from("/tmp/output.jsonl"),
+            dlq: None,
+            dlq_sink: DlqSinkKind::File,
+            dlq_table: "dead_letters".to_string(),
+            source: None,
+            schedule_mode: ScheduleMode::Once,
+            interval_seconds: None,
+            max_runs: None,
+            replay_dlq: None,
+            replay_dlq_source: DlqSinkKind::File,
+            replay_dlq_table: "dead_letters".to_string(),
+            format: InputFormat::Auto,
+            contract_registry: PathBuf::from("/tmp/allowlist.json"),
+        };
+
+        let schedule = resolve_schedule(&args).unwrap();
+        assert_eq!(schedule.max_runs, 1);
+        assert_eq!(schedule.interval_seconds, None);
+    }
+
+    #[test]
+    fn resolve_schedule_interval_requires_interval_and_max_runs() {
+        let args = Args {
+            interface: PathBuf::from("/tmp/interface.json"),
+            input: None,
+            output: PathBuf::from("/tmp/output.jsonl"),
+            dlq: None,
+            dlq_sink: DlqSinkKind::File,
+            dlq_table: "dead_letters".to_string(),
+            source: None,
+            schedule_mode: ScheduleMode::Interval,
+            interval_seconds: Some(1),
+            max_runs: Some(3),
+            replay_dlq: None,
+            replay_dlq_source: DlqSinkKind::File,
+            replay_dlq_table: "dead_letters".to_string(),
+            format: InputFormat::Auto,
+            contract_registry: PathBuf::from("/tmp/allowlist.json"),
+        };
+
+        let schedule = resolve_schedule(&args).unwrap();
+        assert_eq!(schedule.max_runs, 3);
+        assert_eq!(schedule.interval_seconds, Some(1));
     }
 }
