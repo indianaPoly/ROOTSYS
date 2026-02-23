@@ -360,6 +360,8 @@ pub struct DbDriverConfig {
     pub postgres_tls_mode: Option<PostgresTlsMode>,
     #[serde(default)]
     pub pool: Option<DbPoolConfig>,
+    #[serde(default)]
+    pub retry: Option<DbRetryConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -369,6 +371,19 @@ pub struct DbPoolConfig {
     pub min_connections: Option<u32>,
     #[serde(default)]
     pub max_connections: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DbRetryConfig {
+    #[serde(default)]
+    pub max_attempts: Option<u32>,
+    #[serde(default)]
+    pub base_delay_ms: Option<u64>,
+    #[serde(default)]
+    pub max_delay_ms: Option<u64>,
+    #[serde(default)]
+    pub jitter_percent: Option<u32>,
 }
 
 /// Supported database kinds for DB drivers.
@@ -883,6 +898,61 @@ impl ExternalInterface {
                                     code: "DB_POOL_MIN_GT_MAX".to_string(),
                                     path: "/driver/db/pool".to_string(),
                                     message: "min_connections must be <= max_connections"
+                                        .to_string(),
+                                });
+                            }
+                        }
+                    }
+
+                    if let Some(retry) = &db.retry {
+                        if let Some(max_attempts) = retry.max_attempts {
+                            if max_attempts == 0 {
+                                errors.push(ValidationError {
+                                    code: "DB_RETRY_MAX_ATTEMPTS_INVALID".to_string(),
+                                    path: "/driver/db/retry/max_attempts".to_string(),
+                                    message: "max_attempts must be > 0 when provided".to_string(),
+                                });
+                            }
+                        }
+
+                        if let Some(base_delay_ms) = retry.base_delay_ms {
+                            if base_delay_ms == 0 {
+                                errors.push(ValidationError {
+                                    code: "DB_RETRY_BASE_DELAY_INVALID".to_string(),
+                                    path: "/driver/db/retry/base_delay_ms".to_string(),
+                                    message: "base_delay_ms must be > 0 when provided".to_string(),
+                                });
+                            }
+                        }
+
+                        if let Some(max_delay_ms) = retry.max_delay_ms {
+                            if max_delay_ms == 0 {
+                                errors.push(ValidationError {
+                                    code: "DB_RETRY_MAX_DELAY_INVALID".to_string(),
+                                    path: "/driver/db/retry/max_delay_ms".to_string(),
+                                    message: "max_delay_ms must be > 0 when provided".to_string(),
+                                });
+                            }
+                        }
+
+                        if let (Some(base_delay_ms), Some(max_delay_ms)) =
+                            (retry.base_delay_ms, retry.max_delay_ms)
+                        {
+                            if max_delay_ms < base_delay_ms {
+                                errors.push(ValidationError {
+                                    code: "DB_RETRY_DELAY_RANGE_INVALID".to_string(),
+                                    path: "/driver/db/retry/max_delay_ms".to_string(),
+                                    message: "max_delay_ms must be >= base_delay_ms".to_string(),
+                                });
+                            }
+                        }
+
+                        if let Some(jitter_percent) = retry.jitter_percent {
+                            if jitter_percent > 100 {
+                                errors.push(ValidationError {
+                                    code: "DB_RETRY_JITTER_PERCENT_INVALID".to_string(),
+                                    path: "/driver/db/retry/jitter_percent".to_string(),
+                                    message: "jitter_percent must be <= 100 when provided"
                                         .to_string(),
                                 });
                             }
@@ -1800,6 +1870,86 @@ mod tests {
         let interface: ExternalInterface = serde_json::from_str(json).unwrap();
         let errors = interface.validate().unwrap_err();
         assert!(has_code(&errors, "DB_POOL_UNSUPPORTED_FOR_SQLITE"));
+    }
+
+    #[test]
+    fn errors_when_db_retry_policy_fields_are_invalid() {
+        let json = r#"{
+            "name": "db-retry",
+            "version": "v1",
+            "driver": {
+                "kind": "db",
+                "db": {
+                    "kind": "postgres",
+                    "connection": "host=localhost user=app password=secret dbname=ops",
+                    "query": "select 1",
+                    "retry": {
+                        "max_attempts": 0,
+                        "base_delay_ms": 0,
+                        "max_delay_ms": 0,
+                        "jitter_percent": 101
+                    }
+                }
+            }
+        }"#;
+
+        let interface: ExternalInterface = serde_json::from_str(json).unwrap();
+        let errors = interface.validate().unwrap_err();
+        assert!(has_code(&errors, "DB_RETRY_MAX_ATTEMPTS_INVALID"));
+        assert!(has_code(&errors, "DB_RETRY_BASE_DELAY_INVALID"));
+        assert!(has_code(&errors, "DB_RETRY_MAX_DELAY_INVALID"));
+        assert!(has_code(&errors, "DB_RETRY_JITTER_PERCENT_INVALID"));
+    }
+
+    #[test]
+    fn errors_when_db_retry_delay_range_is_invalid() {
+        let json = r#"{
+            "name": "db-retry",
+            "version": "v1",
+            "driver": {
+                "kind": "db",
+                "db": {
+                    "kind": "mysql",
+                    "connection": "mysql://app:secret@localhost:3306/ops",
+                    "query": "select 1",
+                    "retry": {
+                        "max_attempts": 3,
+                        "base_delay_ms": 500,
+                        "max_delay_ms": 200,
+                        "jitter_percent": 20
+                    }
+                }
+            }
+        }"#;
+
+        let interface: ExternalInterface = serde_json::from_str(json).unwrap();
+        let errors = interface.validate().unwrap_err();
+        assert!(has_code(&errors, "DB_RETRY_DELAY_RANGE_INVALID"));
+    }
+
+    #[test]
+    fn db_retry_policy_valid_config_passes_validation() {
+        let json = r#"{
+            "name": "db-retry",
+            "version": "v1",
+            "driver": {
+                "kind": "db",
+                "db": {
+                    "kind": "postgres",
+                    "connection": "host=localhost user=app password=secret dbname=ops",
+                    "query": "select 1",
+                    "retry": {
+                        "max_attempts": 3,
+                        "base_delay_ms": 100,
+                        "max_delay_ms": 2000,
+                        "jitter_percent": 20
+                    }
+                }
+            }
+        }"#;
+
+        let interface: ExternalInterface = serde_json::from_str(json).unwrap();
+        interface.validate().unwrap();
     }
 
     #[test]

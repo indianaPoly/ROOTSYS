@@ -8,9 +8,10 @@ use common::PayloadFormat;
 use drivers::{
     ApiKeyAuthConfig, ApiKeyLocation, BinaryFileDriver,
     CursorPaginationConfig as DriverCursorPaginationConfig, DbConfig, DbDriver, DbKind,
-    ExternalSystem, InputSource, JsonlDriver, OAuth2ClientCredentialsAuthConfig,
-    PagePaginationConfig as DriverPagePaginationConfig, PostgresTlsMode as DriverPostgresTlsMode,
-    RestConfig, RestDriver, RestPaginationConfig as DriverRestPaginationConfig,
+    DbRetryConfig as DriverDbRetryConfig, ExternalSystem, InputSource, JsonlDriver,
+    OAuth2ClientCredentialsAuthConfig, PagePaginationConfig as DriverPagePaginationConfig,
+    PostgresTlsMode as DriverPostgresTlsMode, RestConfig, RestDriver,
+    RestPaginationConfig as DriverRestPaginationConfig,
     RestPaginationKind as DriverRestPaginationKind, RestRetryConfig as DriverRestRetryConfig,
     TextLineDriver,
 };
@@ -281,5 +282,11 @@ fn db_config_from_interface(
         }),
         pool_min_connections: db.pool.as_ref().and_then(|pool| pool.min_connections),
         pool_max_connections: db.pool.as_ref().and_then(|pool| pool.max_connections),
+        retry: db.retry.as_ref().map(|retry| DriverDbRetryConfig {
+            max_attempts: retry.max_attempts,
+            base_delay_ms: retry.base_delay_ms,
+            max_delay_ms: retry.max_delay_ms,
+            jitter_percent: retry.jitter_percent,
+        }),
     })
 }

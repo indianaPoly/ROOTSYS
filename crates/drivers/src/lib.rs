@@ -18,6 +18,10 @@ const DEFAULT_REST_RETRY_MAX_DELAY_MS: u64 = 2_000;
 const DEFAULT_REST_RETRY_JITTER_PERCENT: u32 = 20;
 const DEFAULT_DB_POOL_MIN_CONNECTIONS: u32 = 1;
 const DEFAULT_DB_POOL_MAX_CONNECTIONS: u32 = 10;
+const DEFAULT_DB_RETRY_MAX_ATTEMPTS: u32 = 3;
+const DEFAULT_DB_RETRY_BASE_DELAY_MS: u64 = 100;
+const DEFAULT_DB_RETRY_MAX_DELAY_MS: u64 = 2_000;
+const DEFAULT_DB_RETRY_JITTER_PERCENT: u32 = 20;
 
 /// Errors returned while fetching data from external systems.
 #[derive(Debug, Error)]
@@ -821,7 +825,7 @@ impl RestDriver {
 
 #[cfg(test)]
 mod tests {
-    use super::RestDriver;
+    use super::{delay_with_backoff_and_jitter_ms, is_retryable_db_error, DriverError, RestDriver};
 
     #[test]
     fn backoff_grows_exponentially_without_jitter() {
@@ -853,6 +857,34 @@ mod tests {
         assert!(delay >= 160);
         assert!(delay <= 240);
     }
+
+    #[test]
+    fn db_backoff_grows_exponentially_without_jitter() {
+        assert_eq!(delay_with_backoff_and_jitter_ms(0, 100, 2_000, 0), 100);
+        assert_eq!(delay_with_backoff_and_jitter_ms(1, 100, 2_000, 0), 200);
+        assert_eq!(delay_with_backoff_and_jitter_ms(2, 100, 2_000, 0), 400);
+    }
+
+    #[test]
+    fn sqlite_busy_is_classified_as_retryable() {
+        let sqlite_err = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code: rusqlite::ErrorCode::DatabaseBusy,
+                extended_code: 0,
+            },
+            None,
+        );
+
+        let driver_err = DriverError::Db(sqlite_err);
+        assert!(is_retryable_db_error(&driver_err));
+    }
+
+    #[test]
+    fn sqlite_invalid_query_is_not_retryable() {
+        let sqlite_err = rusqlite::Error::InvalidQuery;
+        let driver_err = DriverError::Db(sqlite_err);
+        assert!(!is_retryable_db_error(&driver_err));
+    }
 }
 
 /// Supported database kinds for DbDriver.
@@ -872,6 +904,15 @@ pub struct DbConfig {
     pub postgres_tls_mode: Option<PostgresTlsMode>,
     pub pool_min_connections: Option<u32>,
     pub pool_max_connections: Option<u32>,
+    pub retry: Option<DbRetryConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DbRetryConfig {
+    pub max_attempts: Option<u32>,
+    pub base_delay_ms: Option<u64>,
+    pub max_delay_ms: Option<u64>,
+    pub jitter_percent: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -888,6 +929,138 @@ fn resolved_pool_bounds(config: &DbConfig) -> (u32, u32) {
         .pool_max_connections
         .unwrap_or(DEFAULT_DB_POOL_MAX_CONNECTIONS);
     (min, std::cmp::max(max, min))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DbRetryPolicy {
+    max_attempts: u32,
+    base_delay_ms: u64,
+    max_delay_ms: u64,
+    jitter_percent: u32,
+}
+
+fn resolved_db_retry_policy(config: &DbConfig) -> DbRetryPolicy {
+    let retry = config.retry.as_ref();
+
+    let max_attempts = retry
+        .and_then(|cfg| cfg.max_attempts)
+        .unwrap_or(DEFAULT_DB_RETRY_MAX_ATTEMPTS)
+        .max(1);
+    let base_delay_ms = retry
+        .and_then(|cfg| cfg.base_delay_ms)
+        .unwrap_or(DEFAULT_DB_RETRY_BASE_DELAY_MS)
+        .max(1);
+    let requested_max_delay_ms = retry
+        .and_then(|cfg| cfg.max_delay_ms)
+        .unwrap_or(DEFAULT_DB_RETRY_MAX_DELAY_MS)
+        .max(1);
+    let max_delay_ms = std::cmp::max(requested_max_delay_ms, base_delay_ms);
+    let jitter_percent = retry
+        .and_then(|cfg| cfg.jitter_percent)
+        .unwrap_or(DEFAULT_DB_RETRY_JITTER_PERCENT)
+        .min(100);
+
+    DbRetryPolicy {
+        max_attempts,
+        base_delay_ms,
+        max_delay_ms,
+        jitter_percent,
+    }
+}
+
+fn delay_with_backoff_and_jitter_ms(
+    attempt_index: u32,
+    base_delay_ms: u64,
+    max_delay_ms: u64,
+    jitter_percent: u32,
+) -> u64 {
+    let exp = attempt_index.min(16);
+    let factor = 2u64.saturating_pow(exp);
+    let base_delay = base_delay_ms.saturating_mul(factor);
+    let clamped = std::cmp::min(base_delay, max_delay_ms);
+
+    if jitter_percent == 0 {
+        return clamped;
+    }
+
+    let jitter_window = (clamped.saturating_mul(jitter_percent as u64)) / 100;
+    if jitter_window == 0 {
+        return clamped;
+    }
+
+    let now_nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_else(|_| Duration::from_secs(0))
+        .subsec_nanos() as u64;
+    let range = jitter_window.saturating_mul(2).saturating_add(1);
+    let offset = now_nanos % range;
+    let signed_offset = offset as i128 - jitter_window as i128;
+    let candidate = clamped as i128 + signed_offset;
+    candidate.max(0) as u64
+}
+
+fn is_retryable_db_error(error: &DriverError) -> bool {
+    match error {
+        DriverError::Db(inner) => match inner {
+            rusqlite::Error::SqliteFailure(err, _) => matches!(
+                err.code,
+                rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+            ),
+            _ => false,
+        },
+        DriverError::Postgres(inner) => {
+            if let Some(code) = inner.code() {
+                let sqlstate = code.code();
+                return sqlstate.starts_with("08")
+                    || sqlstate.starts_with("40")
+                    || sqlstate == "53300"
+                    || sqlstate == "57P03"
+                    || sqlstate == "55000";
+            }
+
+            let text = inner.to_string().to_ascii_lowercase();
+            text.contains("timeout")
+                || text.contains("connection")
+                || text.contains("could not connect")
+                || text.contains("temporar")
+        }
+        DriverError::Mysql(inner) => {
+            let text = inner.to_string().to_ascii_lowercase();
+            text.contains("lock wait timeout")
+                || text.contains("deadlock")
+                || text.contains("server has gone away")
+                || text.contains("lost connection")
+                || text.contains("timeout")
+                || text.contains("too many connections")
+        }
+        _ => false,
+    }
+}
+
+fn execute_with_db_retry<T, F>(config: &DbConfig, mut op: F) -> Result<T, DriverError>
+where
+    F: FnMut() -> Result<T, DriverError>,
+{
+    let policy = resolved_db_retry_policy(config);
+    for attempt in 1..=policy.max_attempts {
+        match op() {
+            Ok(value) => return Ok(value),
+            Err(error) if attempt < policy.max_attempts && is_retryable_db_error(&error) => {
+                let delay_ms = delay_with_backoff_and_jitter_ms(
+                    attempt - 1,
+                    policy.base_delay_ms,
+                    policy.max_delay_ms,
+                    policy.jitter_percent,
+                );
+                std::thread::sleep(Duration::from_millis(delay_ms));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    Err(DriverError::InvalidResponse(
+        "db retry policy exhausted without terminal response".to_string(),
+    ))
 }
 
 /// DB driver that fetches records via SQL queries.
@@ -915,6 +1088,13 @@ impl ExternalSystem for DbDriver {
 
 /// Fetch records from a sqlite database and map each row to a JSON object.
 fn fetch_sqlite(
+    config: &DbConfig,
+    metadata: &RecordMetadata,
+) -> Result<Vec<ExternalRecord>, DriverError> {
+    execute_with_db_retry(config, || fetch_sqlite_once(config, metadata))
+}
+
+fn fetch_sqlite_once(
     config: &DbConfig,
     metadata: &RecordMetadata,
 ) -> Result<Vec<ExternalRecord>, DriverError> {
@@ -950,6 +1130,13 @@ fn fetch_sqlite(
 
 /// Fetch records from a postgres database and map each row to a JSON object.
 fn fetch_postgres(
+    config: &DbConfig,
+    metadata: &RecordMetadata,
+) -> Result<Vec<ExternalRecord>, DriverError> {
+    execute_with_db_retry(config, || fetch_postgres_once(config, metadata))
+}
+
+fn fetch_postgres_once(
     config: &DbConfig,
     metadata: &RecordMetadata,
 ) -> Result<Vec<ExternalRecord>, DriverError> {
@@ -1022,6 +1209,13 @@ fn fetch_postgres(
 
 /// Fetch records from a mysql database and map each row to a JSON object.
 fn fetch_mysql(
+    config: &DbConfig,
+    metadata: &RecordMetadata,
+) -> Result<Vec<ExternalRecord>, DriverError> {
+    execute_with_db_retry(config, || fetch_mysql_once(config, metadata))
+}
+
+fn fetch_mysql_once(
     config: &DbConfig,
     metadata: &RecordMetadata,
 ) -> Result<Vec<ExternalRecord>, DriverError> {

@@ -11,6 +11,12 @@
       "pool": {
         "min_connections": 1,
         "max_connections": 10
+      },
+      "retry": {
+        "max_attempts": 3,
+        "base_delay_ms": 100,
+        "max_delay_ms": 2000,
+        "jitter_percent": 20
       }
     }
   },
