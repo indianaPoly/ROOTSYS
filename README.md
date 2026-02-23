@@ -296,6 +296,12 @@ Page/page_size pagination example:
       "pool": {
         "min_connections": 1,
         "max_connections": 10
+      },
+      "retry": {
+        "max_attempts": 3,
+        "base_delay_ms": 100,
+        "max_delay_ms": 2000,
+        "jitter_percent": 20
       }
     }
   },
@@ -315,6 +321,12 @@ Page/page_size pagination example:
       "pool": {
         "min_connections": 1,
         "max_connections": 10
+      },
+      "retry": {
+        "max_attempts": 3,
+        "base_delay_ms": 100,
+        "max_delay_ms": 2000,
+        "jitter_percent": 20
       }
     }
   },
@@ -327,6 +339,11 @@ Page/page_size pagination example:
   - `require`
 - `pool` is optional and supported for `postgres` and `mysql`.
 - Pool defaults (when omitted): `min_connections=1`, `max_connections=10`.
+- DB retry policy is optional for all DB kinds and supports:
+  - `max_attempts` (default `3`)
+  - `base_delay_ms` (default `100`)
+  - `max_delay_ms` (default `2000`)
+  - `jitter_percent` (default `20`, range `0..=100`)
 
 ## Output Records
 - `IntegrationRecord` retains the raw payload plus metadata and pipeline annotations.
@@ -345,11 +362,10 @@ Page/page_size pagination example:
 
 ## Next Steps (Planned)
 1. Add REST auth helpers (OAuth, API keys) and pagination.
-2. Add retry/backoff and circuit breaker policies for REST/DB drivers.
-3. Add connection pooling and TLS options for DB drivers.
-4. Persist DLQ to external storage (S3, DB, queue).
-5. Add schema registry or contract versioning enforcement.
-6. Add streaming drivers (Kafka, CDC) and scheduler integration.
+2. Add circuit breaker policies for REST/DB drivers.
+3. Persist DLQ to external storage (S3, DB, queue).
+4. Add schema registry or contract versioning enforcement.
+5. Add streaming drivers (Kafka, CDC) and scheduler integration.
 
 ## Verification
 Build/test is currently **NOT VERIFIED** in this environment due to restricted network access for crates.io.
