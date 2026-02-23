@@ -198,6 +198,8 @@ impl SqliteDlqSink {
                 interface_version TEXT NOT NULL,
                 payload_json TEXT NOT NULL,
                 metadata_json TEXT NOT NULL,
+                reason_codes_json TEXT NOT NULL,
+                lineage_json TEXT,
                 errors_json TEXT NOT NULL
             )",
             table
@@ -221,8 +223,10 @@ impl DlqSink for SqliteDlqSink {
                 interface_version,
                 payload_json,
                 metadata_json,
+                reason_codes_json,
+                lineage_json,
                 errors_json
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             table
         );
 
@@ -237,6 +241,8 @@ impl DlqSink for SqliteDlqSink {
 
                 let payload_json = serde_json::to_string(&row.payload)?;
                 let metadata_json = serde_json::to_string(&row.metadata)?;
+                let reason_codes_json = serde_json::to_string(&row.reason_codes)?;
+                let lineage_json = serde_json::to_string(&row.lineage)?;
                 let errors_json = serde_json::to_string(&row.errors)?;
 
                 statement.execute(rusqlite::params![
@@ -246,6 +252,8 @@ impl DlqSink for SqliteDlqSink {
                     &row.interface.version,
                     payload_json,
                     metadata_json,
+                    reason_codes_json,
+                    lineage_json,
                     errors_json,
                 ])?;
             }
@@ -314,12 +322,92 @@ fn load_dead_letters_from_sqlite(
     }
 
     let connection = rusqlite::Connection::open(path)?;
-    let sql = format!(
+
+    let sql_with_lineage = format!(
+        "SELECT source, interface_name, interface_version, payload_json, metadata_json, reason_codes_json, lineage_json, errors_json
+         FROM {} ORDER BY id ASC",
+        table
+    );
+
+    if let Ok(mut statement) = connection.prepare(&sql_with_lineage) {
+        let rows = statement.query_map([], |row| {
+            let source: String = row.get(0)?;
+            let interface_name: String = row.get(1)?;
+            let interface_version: String = row.get(2)?;
+            let payload_json: String = row.get(3)?;
+            let metadata_json: String = row.get(4)?;
+            let reason_codes_json: String = row.get(5)?;
+            let lineage_json: Option<String> = row.get(6)?;
+            let errors_json: String = row.get(7)?;
+
+            let payload = serde_json::from_str(&payload_json).map_err(|err| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    payload_json.len(),
+                    rusqlite::types::Type::Text,
+                    Box::new(err),
+                )
+            })?;
+            let metadata = serde_json::from_str(&metadata_json).map_err(|err| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    metadata_json.len(),
+                    rusqlite::types::Type::Text,
+                    Box::new(err),
+                )
+            })?;
+            let reason_codes = serde_json::from_str(&reason_codes_json).map_err(|err| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    reason_codes_json.len(),
+                    rusqlite::types::Type::Text,
+                    Box::new(err),
+                )
+            })?;
+            let lineage = if let Some(lineage_json) = lineage_json {
+                Some(serde_json::from_str(&lineage_json).map_err(|err| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        lineage_json.len(),
+                        rusqlite::types::Type::Text,
+                        Box::new(err),
+                    )
+                })?)
+            } else {
+                None
+            };
+            let errors: Vec<common::ValidationMessage> = serde_json::from_str(&errors_json)
+                .map_err(|err| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        errors_json.len(),
+                        rusqlite::types::Type::Text,
+                        Box::new(err),
+                    )
+                })?;
+
+            Ok(DeadLetter {
+                source,
+                interface: InterfaceRef {
+                    name: interface_name,
+                    version: interface_version,
+                },
+                payload,
+                metadata,
+                reason_codes,
+                lineage,
+                errors,
+            })
+        })?;
+
+        let mut dead_letters = Vec::new();
+        for row in rows {
+            dead_letters.push(row?);
+        }
+        return Ok(dead_letters);
+    }
+
+    let sql_legacy = format!(
         "SELECT source, interface_name, interface_version, payload_json, metadata_json, errors_json
          FROM {} ORDER BY id ASC",
         table
     );
-    let mut statement = connection.prepare(&sql)?;
+    let mut statement = connection.prepare(&sql_legacy)?;
 
     let rows = statement.query_map([], |row| {
         let source: String = row.get(0)?;
@@ -343,13 +431,14 @@ fn load_dead_letters_from_sqlite(
                 Box::new(err),
             )
         })?;
-        let errors = serde_json::from_str(&errors_json).map_err(|err| {
-            rusqlite::Error::FromSqlConversionFailure(
-                errors_json.len(),
-                rusqlite::types::Type::Text,
-                Box::new(err),
-            )
-        })?;
+        let errors: Vec<common::ValidationMessage> =
+            serde_json::from_str(&errors_json).map_err(|err| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    errors_json.len(),
+                    rusqlite::types::Type::Text,
+                    Box::new(err),
+                )
+            })?;
 
         Ok(DeadLetter {
             source,
@@ -359,6 +448,8 @@ fn load_dead_letters_from_sqlite(
             },
             payload,
             metadata,
+            reason_codes: dedupe_reason_codes_from_errors(&errors),
+            lineage: None,
             errors,
         })
     })?;
@@ -379,6 +470,16 @@ fn dead_letters_to_external_records(dead_letters: Vec<DeadLetter>) -> Vec<Extern
             metadata: dead_letter.metadata,
         })
         .collect()
+}
+
+fn dedupe_reason_codes_from_errors(errors: &[common::ValidationMessage]) -> Vec<String> {
+    let mut codes = Vec::new();
+    for error in errors {
+        if !codes.iter().any(|code| code == &error.code) {
+            codes.push(error.code.clone());
+        }
+    }
+    codes
 }
 
 fn is_valid_sqlite_identifier(value: &str) -> bool {
@@ -591,7 +692,9 @@ mod tests {
         build_dlq_sink, dead_letters_to_external_records, is_valid_sqlite_identifier, with_suffix,
         Args, DlqSinkKind, InputFormat,
     };
-    use common::{DeadLetter, InterfaceRef, Payload, RecordMetadata, ValidationMessage};
+    use common::{
+        DeadLetter, DlqLineage, InterfaceRef, Payload, RecordMetadata, ValidationMessage,
+    };
     use std::path::PathBuf;
 
     #[test]
@@ -661,6 +764,15 @@ mod tests {
                 filename: Some("in.txt".to_string()),
                 source_details: None,
             },
+            reason_codes: vec!["TEST_ERROR".to_string()],
+            lineage: Some(DlqLineage {
+                rejected_at_unix_ms: 1,
+                pipeline_stage: "integration".to_string(),
+                driver_kind: "jsonl".to_string(),
+                record_id_policy: "hash_fallback".to_string(),
+                source_type: Some("file".to_string()),
+                source_locator: Some("/tmp/input.jsonl".to_string()),
+            }),
             errors: vec![ValidationMessage::new(
                 "TEST_ERROR",
                 Some("/x".to_string()),
@@ -672,5 +784,17 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert!(matches!(&records[0].payload, Payload::Text(text) if text == "hello"));
         assert_eq!(records[0].metadata.filename.as_deref(), Some("in.txt"));
+    }
+
+    #[test]
+    fn dedupe_reason_codes_from_errors_returns_unique_codes() {
+        let errors = vec![
+            ValidationMessage::new("A", Some("/a".to_string()), "a".to_string()),
+            ValidationMessage::new("B", Some("/b".to_string()), "b".to_string()),
+            ValidationMessage::new("A", Some("/c".to_string()), "c".to_string()),
+        ];
+
+        let codes = super::dedupe_reason_codes_from_errors(&errors);
+        assert_eq!(codes, vec!["A".to_string(), "B".to_string()]);
     }
 }

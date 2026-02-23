@@ -3,8 +3,8 @@ use std::fs;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use common::{
-    DeadLetter, ExternalRecord, IntegrationRecord, InterfaceRef, Payload, PayloadFormat,
-    ValidationMessage,
+    DeadLetter, DlqLineage, ExternalRecord, IntegrationRecord, InterfaceRef, Payload,
+    PayloadFormat, ValidationMessage,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -1163,26 +1163,18 @@ impl IntegrationPipeline {
         for record in records {
             let (errors, warnings) = self.validate_and_warn(&record.payload);
             if !errors.is_empty() {
-                outcome.dead_letters.push(DeadLetter {
-                    source: source.to_string(),
-                    interface: self.interface.reference(),
-                    payload: record.payload,
-                    metadata: record.metadata,
-                    errors,
-                });
+                outcome
+                    .dead_letters
+                    .push(self.to_dead_letter(source, record, errors));
                 continue;
             }
 
             let record_id = match self.build_record_id(&record.payload) {
                 Ok(value) => value,
                 Err(error) => {
-                    outcome.dead_letters.push(DeadLetter {
-                        source: source.to_string(),
-                        interface: self.interface.reference(),
-                        payload: record.payload,
-                        metadata: record.metadata,
-                        errors: vec![error],
-                    });
+                    outcome
+                        .dead_letters
+                        .push(self.to_dead_letter(source, record, vec![error]));
                     continue;
                 }
             };
@@ -1200,6 +1192,43 @@ impl IntegrationPipeline {
         }
 
         outcome
+    }
+
+    fn to_dead_letter(
+        &self,
+        source: &str,
+        record: ExternalRecord,
+        errors: Vec<ValidationMessage>,
+    ) -> DeadLetter {
+        let reason_codes = dedupe_reason_codes(&errors);
+        let source_type = record
+            .metadata
+            .source_details
+            .as_ref()
+            .map(|details| details.source_type.clone());
+        let source_locator = record
+            .metadata
+            .source_details
+            .as_ref()
+            .and_then(|details| details.locator.clone());
+
+        DeadLetter {
+            source: source.to_string(),
+            interface: self.interface.reference(),
+            payload: record.payload,
+            metadata: record.metadata,
+            reason_codes,
+            lineage: Some(DlqLineage {
+                rejected_at_unix_ms: unix_ms_now(),
+                pipeline_stage: "integration".to_string(),
+                driver_kind: driver_kind_label(self.interface.driver.kind).to_string(),
+                record_id_policy: record_id_policy_label(self.interface.record_id_policy)
+                    .to_string(),
+                source_type,
+                source_locator,
+            }),
+            errors,
+        }
     }
 
     /// Validate payload and emit warnings without mutating the payload.
@@ -1300,6 +1329,33 @@ impl IntegrationPipeline {
             PayloadFormat::Unknown => true,
             expected => expected == payload_kind,
         }
+    }
+}
+
+fn dedupe_reason_codes(errors: &[ValidationMessage]) -> Vec<String> {
+    let mut codes = Vec::new();
+    for error in errors {
+        if !codes.iter().any(|code| code == &error.code) {
+            codes.push(error.code.clone());
+        }
+    }
+    codes
+}
+
+fn driver_kind_label(kind: DriverKind) -> &'static str {
+    match kind {
+        DriverKind::Jsonl => "jsonl",
+        DriverKind::Text => "text",
+        DriverKind::Binary => "binary",
+        DriverKind::Rest => "rest",
+        DriverKind::Db => "db",
+    }
+}
+
+fn record_id_policy_label(policy: RecordIdPolicy) -> &'static str {
+    match policy {
+        RecordIdPolicy::Strict => "strict",
+        RecordIdPolicy::HashFallback => "hash_fallback",
     }
 }
 
@@ -2160,9 +2216,47 @@ mod tests {
             output.dead_letters[0].errors[0].code,
             "RECORD_ID_STRICT_PATHS_UNRESOLVED"
         );
+        assert_eq!(
+            output.dead_letters[0].reason_codes,
+            vec!["RECORD_ID_STRICT_PATHS_UNRESOLVED".to_string()]
+        );
+        let lineage = output.dead_letters[0]
+            .lineage
+            .as_ref()
+            .expect("lineage should exist on dead letters");
+        assert_eq!(lineage.pipeline_stage, "integration");
+        assert_eq!(lineage.driver_kind, "jsonl");
+        assert_eq!(lineage.record_id_policy, "strict");
         assert!(output.dead_letters[0].errors[0]
             .message
             .contains("strict policy violation"));
+    }
+
+    #[test]
+    fn dead_letter_reason_codes_are_unique() {
+        let interface_json = r#"{
+            "name": "mes",
+            "version": "v1",
+            "required_paths": ["/defect_id", "/lot_id"],
+            "driver": { "kind": "jsonl", "input": "-" },
+            "payload_format": "json"
+        }"#;
+        let interface: ExternalInterface = serde_json::from_str(interface_json).unwrap();
+        interface.validate().unwrap();
+
+        let pipeline = IntegrationPipeline::new(interface);
+        let input = ExternalRecord {
+            payload: Payload::from_json(serde_json::json!({ "other": 1 })),
+            metadata: Default::default(),
+        };
+
+        let output = pipeline.integrate("mes", vec![input]);
+        assert_eq!(output.dead_letters.len(), 1);
+        assert_eq!(output.dead_letters[0].reason_codes.len(), 1);
+        assert_eq!(
+            output.dead_letters[0].reason_codes[0],
+            "MISSING_REQUIRED_PATH"
+        );
     }
 
     #[test]

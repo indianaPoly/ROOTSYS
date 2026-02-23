@@ -128,5 +128,21 @@ pub struct DeadLetter {
     pub payload: Payload,
     #[serde(default)]
     pub metadata: RecordMetadata,
+    #[serde(default)]
+    pub reason_codes: Vec<String>,
+    #[serde(default)]
+    pub lineage: Option<DlqLineage>,
     pub errors: Vec<ValidationMessage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DlqLineage {
+    pub rejected_at_unix_ms: i64,
+    pub pipeline_stage: String,
+    pub driver_kind: String,
+    pub record_id_policy: String,
+    #[serde(default)]
+    pub source_type: Option<String>,
+    #[serde(default)]
+    pub source_locator: Option<String>,
 }
