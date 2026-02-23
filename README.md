@@ -120,6 +120,27 @@ cargo run -p shell -- \
   --dlq-table dead_letters
 ```
 
+### DLQ replay (re-integrate rejected payloads)
+- Replay from file DLQ:
+```bash
+cargo run -p shell -- \
+  --interface path/to/interface.json \
+  --contract-registry system/contracts/reference/allowlist.json \
+  --output /tmp/replay.output.jsonl \
+  --replay-dlq /tmp/output.dlq.jsonl \
+  --replay-dlq-source file
+```
+- Replay from SQLite DLQ:
+```bash
+cargo run -p shell -- \
+  --interface path/to/interface.json \
+  --contract-registry system/contracts/reference/allowlist.json \
+  --output /tmp/replay.output.jsonl \
+  --replay-dlq /tmp/dlq.sqlite \
+  --replay-dlq-source sqlite \
+  --replay-dlq-table dead_letters
+```
+
 ## Interface Definition (External System)
 The interface JSON drives the pipeline. Example:
 ```json
