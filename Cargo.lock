@@ -2206,6 +2206,7 @@ dependencies = [
  "common",
  "drivers",
  "runtime",
+ "rusqlite",
  "serde",
  "serde_json",
 ]

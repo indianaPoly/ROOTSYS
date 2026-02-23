@@ -2,6 +2,7 @@ use std::error::Error;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
 use clap::ValueEnum;
@@ -35,6 +36,10 @@ struct Args {
     output: PathBuf,
     #[arg(long)]
     dlq: Option<PathBuf>,
+    #[arg(long, value_enum, default_value_t = DlqSinkKind::File)]
+    dlq_sink: DlqSinkKind,
+    #[arg(long, default_value = "dead_letters")]
+    dlq_table: String,
     #[arg(long)]
     source: Option<String>,
     #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
@@ -49,6 +54,12 @@ enum InputFormat {
     Jsonl,
     Text,
     Binary,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+enum DlqSinkKind {
+    File,
+    Sqlite,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -135,12 +146,126 @@ impl DlqSink for FileDlqSink {
     }
 }
 
+struct SqliteDlqSink {
+    path: PathBuf,
+    table: String,
+}
+
+impl SqliteDlqSink {
+    fn new(path: PathBuf, table: String) -> Self {
+        Self { path, table }
+    }
+
+    fn validated_table_name(&self) -> Result<&str, Box<dyn Error>> {
+        if is_valid_sqlite_identifier(&self.table) {
+            Ok(&self.table)
+        } else {
+            Err(format!(
+                "invalid --dlq-table value '{}': use [A-Za-z_][A-Za-z0-9_]*",
+                self.table
+            )
+            .into())
+        }
+    }
+
+    fn ensure_table(&self, connection: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
+        let table = self.table.as_str();
+        let sql = format!(
+            "CREATE TABLE IF NOT EXISTS {} (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at_unix_ms INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                interface_name TEXT NOT NULL,
+                interface_version TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                metadata_json TEXT NOT NULL,
+                errors_json TEXT NOT NULL
+            )",
+            table
+        );
+        connection.execute(&sql, [])?;
+        Ok(())
+    }
+}
+
+impl DlqSink for SqliteDlqSink {
+    fn write(&self, rows: &[common::DeadLetter]) -> Result<(), Box<dyn Error>> {
+        let table = self.validated_table_name()?.to_string();
+        let mut connection = rusqlite::Connection::open(&self.path)?;
+        self.ensure_table(&connection)?;
+
+        let insert_sql = format!(
+            "INSERT INTO {} (
+                created_at_unix_ms,
+                source,
+                interface_name,
+                interface_version,
+                payload_json,
+                metadata_json,
+                errors_json
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            table
+        );
+
+        let tx = connection.transaction()?;
+        {
+            let mut statement = tx.prepare(&insert_sql)?;
+            for row in rows {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as i64;
+
+                let payload_json = serde_json::to_string(&row.payload)?;
+                let metadata_json = serde_json::to_string(&row.metadata)?;
+                let errors_json = serde_json::to_string(&row.errors)?;
+
+                statement.execute(rusqlite::params![
+                    now,
+                    &row.source,
+                    &row.interface.name,
+                    &row.interface.version,
+                    payload_json,
+                    metadata_json,
+                    errors_json,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+}
+
 fn build_dlq_sink(args: &Args) -> Box<dyn DlqSink> {
-    let path = args
-        .dlq
-        .clone()
-        .unwrap_or_else(|| with_suffix(&args.output, "dlq"));
-    Box::new(FileDlqSink::new(path))
+    match args.dlq_sink {
+        DlqSinkKind::File => {
+            let path = args
+                .dlq
+                .clone()
+                .unwrap_or_else(|| with_suffix(&args.output, "dlq"));
+            Box::new(FileDlqSink::new(path))
+        }
+        DlqSinkKind::Sqlite => {
+            let path = args
+                .dlq
+                .clone()
+                .unwrap_or_else(|| with_suffix(&args.output, "dlq.db"));
+            Box::new(SqliteDlqSink::new(path, args.dlq_table.clone()))
+        }
+    }
+}
+
+fn is_valid_sqlite_identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return false;
+    }
+
+    chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
 }
 
 /// Write JSONL output to disk.
@@ -336,7 +461,9 @@ fn db_config_from_interface(
 
 #[cfg(test)]
 mod tests {
-    use super::with_suffix;
+    use super::{
+        build_dlq_sink, is_valid_sqlite_identifier, with_suffix, Args, DlqSinkKind, InputFormat,
+    };
     use std::path::PathBuf;
 
     #[test]
@@ -352,5 +479,40 @@ mod tests {
     fn with_suffix_handles_extensionless_path() {
         let path = PathBuf::from("/tmp/output");
         assert_eq!(with_suffix(&path, "dlq"), PathBuf::from("/tmp/output.dlq"));
+    }
+
+    #[test]
+    fn default_sqlite_dlq_path_uses_db_suffix() {
+        let args = Args {
+            interface: PathBuf::from("/tmp/interface.json"),
+            input: None,
+            output: PathBuf::from("/tmp/output.jsonl"),
+            dlq: None,
+            dlq_sink: DlqSinkKind::Sqlite,
+            dlq_table: "dead_letters".to_string(),
+            source: None,
+            format: InputFormat::Auto,
+            contract_registry: PathBuf::from("/tmp/allowlist.json"),
+        };
+
+        let _ = build_dlq_sink(&args);
+        assert_eq!(
+            with_suffix(&args.output, "dlq.db"),
+            PathBuf::from("/tmp/output.dlq.db.jsonl")
+        );
+    }
+
+    #[test]
+    fn sqlite_identifier_validation_accepts_safe_name() {
+        assert!(is_valid_sqlite_identifier("dead_letters"));
+        assert!(is_valid_sqlite_identifier("dlq2"));
+    }
+
+    #[test]
+    fn sqlite_identifier_validation_rejects_unsafe_name() {
+        assert!(!is_valid_sqlite_identifier(""));
+        assert!(!is_valid_sqlite_identifier("2dead_letters"));
+        assert!(!is_valid_sqlite_identifier("dead-letters"));
+        assert!(!is_valid_sqlite_identifier("dead letters"));
     }
 }
