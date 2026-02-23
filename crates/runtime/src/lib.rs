@@ -243,6 +243,21 @@ pub struct RestDriverConfig {
     pub auth: Option<RestAuthConfig>,
     #[serde(default)]
     pub pagination: Option<RestPaginationConfig>,
+    #[serde(default)]
+    pub retry: Option<RestRetryConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RestRetryConfig {
+    #[serde(default)]
+    pub max_attempts: Option<u32>,
+    #[serde(default)]
+    pub base_delay_ms: Option<u64>,
+    #[serde(default)]
+    pub max_delay_ms: Option<u64>,
+    #[serde(default)]
+    pub jitter_percent: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -479,6 +494,61 @@ impl ExternalInterface {
                                 path: "/driver/rest/items_pointer".to_string(),
                                 message: message.to_string(),
                             });
+                        }
+                    }
+
+                    if let Some(retry) = &rest.retry {
+                        if let Some(max_attempts) = retry.max_attempts {
+                            if max_attempts == 0 {
+                                errors.push(ValidationError {
+                                    code: "REST_RETRY_MAX_ATTEMPTS_INVALID".to_string(),
+                                    path: "/driver/rest/retry/max_attempts".to_string(),
+                                    message: "max_attempts must be > 0 when provided".to_string(),
+                                });
+                            }
+                        }
+
+                        if let Some(base_delay_ms) = retry.base_delay_ms {
+                            if base_delay_ms == 0 {
+                                errors.push(ValidationError {
+                                    code: "REST_RETRY_BASE_DELAY_INVALID".to_string(),
+                                    path: "/driver/rest/retry/base_delay_ms".to_string(),
+                                    message: "base_delay_ms must be > 0 when provided".to_string(),
+                                });
+                            }
+                        }
+
+                        if let Some(max_delay_ms) = retry.max_delay_ms {
+                            if max_delay_ms == 0 {
+                                errors.push(ValidationError {
+                                    code: "REST_RETRY_MAX_DELAY_INVALID".to_string(),
+                                    path: "/driver/rest/retry/max_delay_ms".to_string(),
+                                    message: "max_delay_ms must be > 0 when provided".to_string(),
+                                });
+                            }
+                        }
+
+                        if let (Some(base_delay_ms), Some(max_delay_ms)) =
+                            (retry.base_delay_ms, retry.max_delay_ms)
+                        {
+                            if max_delay_ms < base_delay_ms {
+                                errors.push(ValidationError {
+                                    code: "REST_RETRY_DELAY_RANGE_INVALID".to_string(),
+                                    path: "/driver/rest/retry/max_delay_ms".to_string(),
+                                    message: "max_delay_ms must be >= base_delay_ms".to_string(),
+                                });
+                            }
+                        }
+
+                        if let Some(jitter_percent) = retry.jitter_percent {
+                            if jitter_percent > 100 {
+                                errors.push(ValidationError {
+                                    code: "REST_RETRY_JITTER_PERCENT_INVALID".to_string(),
+                                    path: "/driver/rest/retry/jitter_percent".to_string(),
+                                    message: "jitter_percent must be <= 100 when provided"
+                                        .to_string(),
+                                });
+                            }
                         }
                     }
 
@@ -1535,6 +1605,80 @@ mod tests {
                             "initial_page": 1,
                             "max_pages": 10
                         }
+                    }
+                }
+            }
+        }"#;
+
+        let interface: ExternalInterface = serde_json::from_str(json).unwrap();
+        interface.validate().unwrap();
+    }
+
+    #[test]
+    fn errors_when_retry_policy_fields_are_invalid() {
+        let json = r#"{
+            "name": "rest-retry",
+            "version": "v1",
+            "driver": {
+                "kind": "rest",
+                "rest": {
+                    "url": "https://api.example.com/events",
+                    "retry": {
+                        "max_attempts": 0,
+                        "base_delay_ms": 0,
+                        "max_delay_ms": 0,
+                        "jitter_percent": 101
+                    }
+                }
+            }
+        }"#;
+
+        let interface: ExternalInterface = serde_json::from_str(json).unwrap();
+        let errors = interface.validate().unwrap_err();
+        assert!(has_code(&errors, "REST_RETRY_MAX_ATTEMPTS_INVALID"));
+        assert!(has_code(&errors, "REST_RETRY_BASE_DELAY_INVALID"));
+        assert!(has_code(&errors, "REST_RETRY_MAX_DELAY_INVALID"));
+        assert!(has_code(&errors, "REST_RETRY_JITTER_PERCENT_INVALID"));
+    }
+
+    #[test]
+    fn errors_when_retry_delay_range_is_invalid() {
+        let json = r#"{
+            "name": "rest-retry",
+            "version": "v1",
+            "driver": {
+                "kind": "rest",
+                "rest": {
+                    "url": "https://api.example.com/events",
+                    "retry": {
+                        "max_attempts": 3,
+                        "base_delay_ms": 500,
+                        "max_delay_ms": 200,
+                        "jitter_percent": 20
+                    }
+                }
+            }
+        }"#;
+
+        let interface: ExternalInterface = serde_json::from_str(json).unwrap();
+        let errors = interface.validate().unwrap_err();
+        assert!(has_code(&errors, "REST_RETRY_DELAY_RANGE_INVALID"));
+    }
+
+    #[test]
+    fn retry_policy_valid_config_passes_validation() {
+        let json = r#"{
+            "name": "rest-retry",
+            "version": "v1",
+            "driver": {
+                "kind": "rest",
+                "rest": {
+                    "url": "https://api.example.com/events",
+                    "retry": {
+                        "max_attempts": 3,
+                        "base_delay_ms": 100,
+                        "max_delay_ms": 2000,
+                        "jitter_percent": 20
                     }
                 }
             }

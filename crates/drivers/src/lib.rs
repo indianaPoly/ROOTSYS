@@ -12,6 +12,10 @@ use thiserror::Error;
 
 const DEFAULT_REST_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_REST_MAX_PAGES: u32 = 100;
+const DEFAULT_REST_RETRY_MAX_ATTEMPTS: u32 = 3;
+const DEFAULT_REST_RETRY_BASE_DELAY_MS: u64 = 100;
+const DEFAULT_REST_RETRY_MAX_DELAY_MS: u64 = 2_000;
+const DEFAULT_REST_RETRY_JITTER_PERCENT: u32 = 20;
 const DEFAULT_DB_POOL_MIN_CONNECTIONS: u32 = 1;
 const DEFAULT_DB_POOL_MAX_CONNECTIONS: u32 = 10;
 
@@ -228,6 +232,23 @@ pub struct RestConfig {
     pub api_key_auth: Option<ApiKeyAuthConfig>,
     pub oauth2_auth: Option<OAuth2ClientCredentialsAuthConfig>,
     pub pagination: Option<RestPaginationConfig>,
+    pub retry: Option<RestRetryConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RestRetryConfig {
+    pub max_attempts: Option<u32>,
+    pub base_delay_ms: Option<u64>,
+    pub max_delay_ms: Option<u64>,
+    pub jitter_percent: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RestRetryPolicy {
+    max_attempts: u32,
+    base_delay_ms: u64,
+    max_delay_ms: u64,
+    jitter_percent: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -362,6 +383,76 @@ impl RestDriver {
 
         Ok(token)
     }
+
+    fn resolved_retry_policy(&self) -> RestRetryPolicy {
+        let retry = self.config.retry.as_ref();
+
+        let max_attempts = retry
+            .and_then(|cfg| cfg.max_attempts)
+            .unwrap_or(DEFAULT_REST_RETRY_MAX_ATTEMPTS)
+            .max(1);
+        let base_delay_ms = retry
+            .and_then(|cfg| cfg.base_delay_ms)
+            .unwrap_or(DEFAULT_REST_RETRY_BASE_DELAY_MS)
+            .max(1);
+        let requested_max_delay_ms = retry
+            .and_then(|cfg| cfg.max_delay_ms)
+            .unwrap_or(DEFAULT_REST_RETRY_MAX_DELAY_MS)
+            .max(1);
+        let max_delay_ms = std::cmp::max(requested_max_delay_ms, base_delay_ms);
+        let jitter_percent = retry
+            .and_then(|cfg| cfg.jitter_percent)
+            .unwrap_or(DEFAULT_REST_RETRY_JITTER_PERCENT)
+            .min(100);
+
+        RestRetryPolicy {
+            max_attempts,
+            base_delay_ms,
+            max_delay_ms,
+            jitter_percent,
+        }
+    }
+
+    fn should_retry_error(error: &DriverError) -> bool {
+        match error {
+            DriverError::Http(_) => true,
+            DriverError::HttpStatus { status, .. } => {
+                matches!(status, 408 | 425 | 429 | 500 | 502 | 503 | 504)
+            }
+            _ => false,
+        }
+    }
+
+    fn delay_with_backoff_and_jitter_ms(
+        attempt_index: u32,
+        base_delay_ms: u64,
+        max_delay_ms: u64,
+        jitter_percent: u32,
+    ) -> u64 {
+        let exp = attempt_index.min(16);
+        let factor = 2u64.saturating_pow(exp);
+        let base_delay = base_delay_ms.saturating_mul(factor);
+        let clamped = std::cmp::min(base_delay, max_delay_ms);
+
+        if jitter_percent == 0 {
+            return clamped;
+        }
+
+        let jitter_window = (clamped.saturating_mul(jitter_percent as u64)) / 100;
+        if jitter_window == 0 {
+            return clamped;
+        }
+
+        let now_nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_else(|_| Duration::from_secs(0))
+            .subsec_nanos() as u64;
+        let range = jitter_window.saturating_mul(2).saturating_add(1);
+        let offset = now_nanos % range;
+        let signed_offset = offset as i128 - jitter_window as i128;
+        let candidate = clamped as i128 + signed_offset;
+        candidate.max(0) as u64
+    }
 }
 
 impl ExternalSystem for RestDriver {
@@ -416,7 +507,7 @@ impl ExternalSystem for RestDriver {
 }
 
 impl RestDriver {
-    fn execute_rest_call(
+    fn execute_rest_call_once(
         &mut self,
         agent: &ureq::Agent,
         cursor_query: Option<(&str, &str)>,
@@ -474,6 +565,34 @@ impl RestDriver {
         response.into_reader().read_to_end(&mut bytes)?;
 
         Ok((bytes, content_type))
+    }
+
+    fn execute_rest_call(
+        &mut self,
+        agent: &ureq::Agent,
+        cursor_query: Option<(&str, &str)>,
+    ) -> Result<(Vec<u8>, Option<String>), DriverError> {
+        let policy = self.resolved_retry_policy();
+
+        for attempt in 1..=policy.max_attempts {
+            match self.execute_rest_call_once(agent, cursor_query) {
+                Ok(result) => return Ok(result),
+                Err(error) if attempt < policy.max_attempts && Self::should_retry_error(&error) => {
+                    let delay_ms = Self::delay_with_backoff_and_jitter_ms(
+                        attempt - 1,
+                        policy.base_delay_ms,
+                        policy.max_delay_ms,
+                        policy.jitter_percent,
+                    );
+                    std::thread::sleep(Duration::from_millis(delay_ms));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+
+        Err(DriverError::InvalidResponse(
+            "retry policy exhausted without terminal response".to_string(),
+        ))
     }
 
     fn fetch_cursor_paginated(
@@ -571,51 +690,96 @@ impl RestDriver {
                 .method
                 .clone()
                 .unwrap_or_else(|| "GET".to_string());
+            let page_value = page.to_string();
+            let page_size_value = page_cfg.page_size.to_string();
+            let policy = self.resolved_retry_policy();
+            let mut last_error: Option<DriverError> = None;
+            let mut result: Option<(Vec<u8>, Option<String>)> = None;
 
-            let mut request = agent.request(&method, &self.config.url);
+            for attempt in 1..=policy.max_attempts {
+                let mut request = agent.request(&method, &self.config.url);
+                request = request.query(&page_cfg.page_param, &page_value);
+                request = request.query(&page_cfg.page_size_param, &page_size_value);
 
-            request = request.query(&page_cfg.page_param, &page.to_string());
-            request = request.query(&page_cfg.page_size_param, &page_cfg.page_size.to_string());
+                if let Some(oauth2) = self.config.oauth2_auth.clone() {
+                    let bearer = self.get_bearer_token(agent, &oauth2)?;
+                    request = request.set("Authorization", &format!("Bearer {bearer}"));
+                }
 
-            if let Some(oauth2) = self.config.oauth2_auth.clone() {
-                let bearer = self.get_bearer_token(agent, &oauth2)?;
-                request = request.set("Authorization", &format!("Bearer {bearer}"));
-            }
-
-            if let Some(auth) = &self.config.api_key_auth {
-                match auth.location {
-                    ApiKeyLocation::Header => {
-                        request = request.set(&auth.name, &auth.value);
-                    }
-                    ApiKeyLocation::Query => {
-                        request = request.query(&auth.name, &auth.value);
+                if let Some(auth) = &self.config.api_key_auth {
+                    match auth.location {
+                        ApiKeyLocation::Header => {
+                            request = request.set(&auth.name, &auth.value);
+                        }
+                        ApiKeyLocation::Query => {
+                            request = request.query(&auth.name, &auth.value);
+                        }
                     }
                 }
-            }
 
-            for (key, value) in &self.config.headers {
-                request = request.set(key, value);
-            }
-
-            let response = match &self.config.body {
-                Some(body) => request.send_string(body),
-                None => request.call(),
-            };
-
-            let response = match response {
-                Ok(response) => response,
-                Err(ureq::Error::Status(status, response)) => {
-                    let body = response.into_string().unwrap_or_default();
-                    return Err(DriverError::HttpStatus { status, body });
+                for (key, value) in &self.config.headers {
+                    request = request.set(key, value);
                 }
-                Err(err) => return Err(DriverError::Http(err)),
-            };
 
-            let content_type = response
-                .header("content-type")
-                .map(|value| value.to_string());
-            let mut bytes = Vec::new();
-            response.into_reader().read_to_end(&mut bytes)?;
+                let response = match &self.config.body {
+                    Some(body) => request.send_string(body),
+                    None => request.call(),
+                };
+
+                let response = match response {
+                    Ok(response) => response,
+                    Err(ureq::Error::Status(status, response)) => {
+                        let body = response.into_string().unwrap_or_default();
+                        let error = DriverError::HttpStatus { status, body };
+                        if attempt < policy.max_attempts && Self::should_retry_error(&error) {
+                            let delay_ms = Self::delay_with_backoff_and_jitter_ms(
+                                attempt - 1,
+                                policy.base_delay_ms,
+                                policy.max_delay_ms,
+                                policy.jitter_percent,
+                            );
+                            std::thread::sleep(Duration::from_millis(delay_ms));
+                            last_error = Some(error);
+                            continue;
+                        }
+                        return Err(error);
+                    }
+                    Err(err) => {
+                        let error = DriverError::Http(err);
+                        if attempt < policy.max_attempts && Self::should_retry_error(&error) {
+                            let delay_ms = Self::delay_with_backoff_and_jitter_ms(
+                                attempt - 1,
+                                policy.base_delay_ms,
+                                policy.max_delay_ms,
+                                policy.jitter_percent,
+                            );
+                            std::thread::sleep(Duration::from_millis(delay_ms));
+                            last_error = Some(error);
+                            continue;
+                        }
+                        return Err(error);
+                    }
+                };
+
+                let content_type = response
+                    .header("content-type")
+                    .map(|value| value.to_string());
+                let mut bytes = Vec::new();
+                response.into_reader().read_to_end(&mut bytes)?;
+                result = Some((bytes, content_type));
+                break;
+            }
+
+            let (bytes, content_type) = match result {
+                Some(value) => value,
+                None => {
+                    return Err(last_error.unwrap_or_else(|| {
+                        DriverError::InvalidResponse(
+                            "retry policy exhausted without terminal response".to_string(),
+                        )
+                    }))
+                }
+            };
 
             let metadata = metadata_with_content_type(
                 self.metadata.clone(),
@@ -652,6 +816,42 @@ impl RestDriver {
         }
 
         Ok(records)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RestDriver;
+
+    #[test]
+    fn backoff_grows_exponentially_without_jitter() {
+        assert_eq!(
+            RestDriver::delay_with_backoff_and_jitter_ms(0, 100, 2_000, 0),
+            100
+        );
+        assert_eq!(
+            RestDriver::delay_with_backoff_and_jitter_ms(1, 100, 2_000, 0),
+            200
+        );
+        assert_eq!(
+            RestDriver::delay_with_backoff_and_jitter_ms(2, 100, 2_000, 0),
+            400
+        );
+    }
+
+    #[test]
+    fn backoff_respects_max_delay_without_jitter() {
+        assert_eq!(
+            RestDriver::delay_with_backoff_and_jitter_ms(5, 100, 500, 0),
+            500
+        );
+    }
+
+    #[test]
+    fn jitter_stays_within_expected_window() {
+        let delay = RestDriver::delay_with_backoff_and_jitter_ms(1, 100, 2_000, 20);
+        assert!(delay >= 160);
+        assert!(delay <= 240);
     }
 }
 

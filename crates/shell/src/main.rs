@@ -11,7 +11,8 @@ use drivers::{
     ExternalSystem, InputSource, JsonlDriver, OAuth2ClientCredentialsAuthConfig,
     PagePaginationConfig as DriverPagePaginationConfig, PostgresTlsMode as DriverPostgresTlsMode,
     RestConfig, RestDriver, RestPaginationConfig as DriverRestPaginationConfig,
-    RestPaginationKind as DriverRestPaginationKind, TextLineDriver,
+    RestPaginationKind as DriverRestPaginationKind, RestRetryConfig as DriverRestRetryConfig,
+    TextLineDriver,
 };
 use runtime::{
     ApiKeyLocation as RuntimeApiKeyLocation, ContractRegistry, DbKind as RuntimeDbKind, DriverKind,
@@ -245,6 +246,12 @@ fn rest_config_from_interface(
                         })
                 }
             }),
+        retry: rest.retry.as_ref().map(|retry| DriverRestRetryConfig {
+            max_attempts: retry.max_attempts,
+            base_delay_ms: retry.base_delay_ms,
+            max_delay_ms: retry.max_delay_ms,
+            jitter_percent: retry.jitter_percent,
+        }),
     })
 }
 
