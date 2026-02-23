@@ -282,7 +282,8 @@ Page/page_size pagination example:
     "db": {
       "kind": "postgres",
       "connection": "host=localhost user=app password=secret dbname=ops",
-      "query": "SELECT * FROM defect_events"
+      "query": "SELECT * FROM defect_events",
+      "postgres_tls_mode": "require"
     }
   },
   "payload_format": "json"
@@ -303,6 +304,10 @@ Page/page_size pagination example:
   "payload_format": "json"
 }
 ```
+- `postgres_tls_mode` is optional and only valid for `kind: "postgres"`.
+- `postgres_tls_mode` supports:
+  - `disable` (default)
+  - `require`
 
 ## Output Records
 - `IntegrationRecord` retains the raw payload plus metadata and pipeline annotations.
