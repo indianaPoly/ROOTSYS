@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -214,6 +214,7 @@ pub struct RestConfig {
     pub response_format: PayloadFormat,
     pub items_pointer: Option<String>,
     pub api_key_auth: Option<ApiKeyAuthConfig>,
+    pub oauth2_auth: Option<OAuth2ClientCredentialsAuthConfig>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -229,16 +230,94 @@ pub struct ApiKeyAuthConfig {
     pub value: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct OAuth2ClientCredentialsAuthConfig {
+    pub token_url: String,
+    pub client_id: String,
+    pub client_secret: String,
+    pub scope: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedBearerToken {
+    token: String,
+    expires_at: Instant,
+}
+
 /// REST driver that fetches records from HTTP endpoints.
 pub struct RestDriver {
     config: RestConfig,
     metadata: RecordMetadata,
+    cached_bearer_token: Option<CachedBearerToken>,
 }
 
 impl RestDriver {
     /// Create a REST driver with the given configuration.
     pub fn new(config: RestConfig, metadata: RecordMetadata) -> Self {
-        Self { config, metadata }
+        Self {
+            config,
+            metadata,
+            cached_bearer_token: None,
+        }
+    }
+
+    fn get_bearer_token(
+        &mut self,
+        agent: &ureq::Agent,
+        auth: &OAuth2ClientCredentialsAuthConfig,
+    ) -> Result<String, DriverError> {
+        if let Some(cached) = &self.cached_bearer_token {
+            if Instant::now() < cached.expires_at {
+                return Ok(cached.token.clone());
+            }
+        }
+
+        let mut form = vec![
+            ("grant_type", "client_credentials"),
+            ("client_id", auth.client_id.as_str()),
+            ("client_secret", auth.client_secret.as_str()),
+        ];
+
+        if let Some(scope) = &auth.scope {
+            form.push(("scope", scope.as_str()));
+        }
+
+        let response = match agent.post(&auth.token_url).send_form(&form) {
+            Ok(response) => response,
+            Err(ureq::Error::Status(status, response)) => {
+                let body = response.into_string().unwrap_or_default();
+                return Err(DriverError::HttpStatus { status, body });
+            }
+            Err(err) => return Err(DriverError::Http(err)),
+        };
+
+        let token_payload: serde_json::Value = serde_json::from_reader(response.into_reader())
+            .map_err(|err| DriverError::InvalidResponse(err.to_string()))?;
+
+        let token = token_payload
+            .get("access_token")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| {
+                DriverError::InvalidResponse(
+                    "oauth2 token response missing access_token".to_string(),
+                )
+            })?
+            .to_string();
+
+        let expires_in = token_payload
+            .get("expires_in")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(300);
+
+        let refresh_margin = 5;
+        let effective_ttl = expires_in.saturating_sub(refresh_margin).max(1);
+
+        self.cached_bearer_token = Some(CachedBearerToken {
+            token: token.clone(),
+            expires_at: Instant::now() + Duration::from_secs(effective_ttl),
+        });
+
+        Ok(token)
     }
 }
 
@@ -261,6 +340,11 @@ impl ExternalSystem for RestDriver {
             .unwrap_or_else(|| "GET".to_string());
 
         let mut request = agent.request(&method, &self.config.url);
+
+        if let Some(oauth2) = self.config.oauth2_auth.clone() {
+            let bearer = self.get_bearer_token(&agent, &oauth2)?;
+            request = request.set("Authorization", &format!("Bearer {bearer}"));
+        }
 
         if let Some(auth) = &self.config.api_key_auth {
             match auth.location {

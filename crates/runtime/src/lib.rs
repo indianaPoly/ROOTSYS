@@ -250,6 +250,8 @@ pub struct RestAuthConfig {
     pub kind: RestAuthKind,
     #[serde(default)]
     pub api_key: Option<ApiKeyAuthConfig>,
+    #[serde(default)]
+    pub oauth2_client_credentials: Option<OAuth2ClientCredentialsConfig>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -257,6 +259,8 @@ pub struct RestAuthConfig {
 pub enum RestAuthKind {
     #[default]
     ApiKey,
+    #[serde(rename = "oauth2_client_credentials")]
+    OAuth2ClientCredentials,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -266,6 +270,16 @@ pub struct ApiKeyAuthConfig {
     pub location: ApiKeyLocation,
     pub name: String,
     pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OAuth2ClientCredentialsConfig {
+    pub token_url: String,
+    pub client_id: String,
+    pub client_secret: String,
+    #[serde(default)]
+    pub scope: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -444,6 +458,54 @@ impl ExternalInterface {
                                                 "header '{}' conflicts with api_key auth header injection",
                                                 api_key.name
                                             ),
+                                        });
+                                    }
+                                }
+                            }
+                            RestAuthKind::OAuth2ClientCredentials => {
+                                if auth.oauth2_client_credentials.is_none() {
+                                    errors.push(ValidationError {
+                                        code: "REST_AUTH_OAUTH2_REQUIRED".to_string(),
+                                        path: "/driver/rest/auth/oauth2_client_credentials".to_string(),
+                                        message: "oauth2_client_credentials config is required when auth.kind is 'oauth2_client_credentials'"
+                                            .to_string(),
+                                    });
+                                }
+
+                                if let Some(oauth2) = &auth.oauth2_client_credentials {
+                                    if oauth2.token_url.trim().is_empty() {
+                                        errors.push(ValidationError {
+                                            code: "REST_AUTH_OAUTH2_TOKEN_URL_EMPTY".to_string(),
+                                            path: "/driver/rest/auth/oauth2_client_credentials/token_url"
+                                                .to_string(),
+                                            message: "token_url must be a non-empty string".to_string(),
+                                        });
+                                    }
+
+                                    if oauth2.client_id.trim().is_empty() {
+                                        errors.push(ValidationError {
+                                            code: "REST_AUTH_OAUTH2_CLIENT_ID_EMPTY".to_string(),
+                                            path: "/driver/rest/auth/oauth2_client_credentials/client_id"
+                                                .to_string(),
+                                            message: "client_id must be a non-empty string".to_string(),
+                                        });
+                                    }
+
+                                    if oauth2.client_secret.trim().is_empty() {
+                                        errors.push(ValidationError {
+                                            code: "REST_AUTH_OAUTH2_CLIENT_SECRET_EMPTY".to_string(),
+                                            path: "/driver/rest/auth/oauth2_client_credentials/client_secret"
+                                                .to_string(),
+                                            message: "client_secret must be a non-empty string".to_string(),
+                                        });
+                                    }
+
+                                    if rest.headers.contains_key("Authorization") {
+                                        errors.push(ValidationError {
+                                            code: "REST_AUTH_OAUTH2_HEADER_CONFLICT".to_string(),
+                                            path: "/driver/rest/headers".to_string(),
+                                            message: "header 'Authorization' conflicts with oauth2 bearer token injection"
+                                                .to_string(),
                                         });
                                     }
                                 }
@@ -1008,6 +1070,55 @@ mod tests {
         let interface: ExternalInterface = serde_json::from_str(json).unwrap();
         let errors = interface.validate().unwrap_err();
         assert!(has_code(&errors, "REST_AUTH_API_KEY_HEADER_CONFLICT"));
+    }
+
+    #[test]
+    fn errors_when_oauth2_auth_missing_payload() {
+        let json = r#"{
+            "name": "rest-auth",
+            "version": "v1",
+            "driver": {
+                "kind": "rest",
+                "rest": {
+                    "url": "https://api.example.com/events",
+                    "auth": {
+                        "kind": "oauth2_client_credentials"
+                    }
+                }
+            }
+        }"#;
+
+        let interface: ExternalInterface = serde_json::from_str(json).unwrap();
+        let errors = interface.validate().unwrap_err();
+        assert!(has_code(&errors, "REST_AUTH_OAUTH2_REQUIRED"));
+    }
+
+    #[test]
+    fn errors_when_oauth2_auth_fields_are_empty() {
+        let json = r#"{
+            "name": "rest-auth",
+            "version": "v1",
+            "driver": {
+                "kind": "rest",
+                "rest": {
+                    "url": "https://api.example.com/events",
+                    "auth": {
+                        "kind": "oauth2_client_credentials",
+                        "oauth2_client_credentials": {
+                            "token_url": "",
+                            "client_id": "",
+                            "client_secret": ""
+                        }
+                    }
+                }
+            }
+        }"#;
+
+        let interface: ExternalInterface = serde_json::from_str(json).unwrap();
+        let errors = interface.validate().unwrap_err();
+        assert!(has_code(&errors, "REST_AUTH_OAUTH2_TOKEN_URL_EMPTY"));
+        assert!(has_code(&errors, "REST_AUTH_OAUTH2_CLIENT_ID_EMPTY"));
+        assert!(has_code(&errors, "REST_AUTH_OAUTH2_CLIENT_SECRET_EMPTY"));
     }
 
     #[test]

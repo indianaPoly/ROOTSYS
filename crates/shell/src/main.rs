@@ -7,11 +7,12 @@ use clap::ValueEnum;
 use common::PayloadFormat;
 use drivers::{
     ApiKeyAuthConfig, ApiKeyLocation, BinaryFileDriver, DbConfig, DbDriver, DbKind, ExternalSystem,
-    InputSource, JsonlDriver, RestConfig, RestDriver, TextLineDriver,
+    InputSource, JsonlDriver, OAuth2ClientCredentialsAuthConfig, RestConfig, RestDriver,
+    TextLineDriver,
 };
 use runtime::{
     ApiKeyLocation as RuntimeApiKeyLocation, ContractRegistry, DbKind as RuntimeDbKind, DriverKind,
-    ExternalInterface, IntegrationPipeline,
+    ExternalInterface, IntegrationPipeline, RestAuthKind,
 };
 
 #[derive(Debug, Parser)]
@@ -176,14 +177,32 @@ fn rest_config_from_interface(
         response_format: rest.response_format.unwrap_or(PayloadFormat::Unknown),
         items_pointer: rest.items_pointer.clone(),
         api_key_auth: rest.auth.as_ref().and_then(|auth| {
-            auth.api_key.as_ref().map(|api_key| ApiKeyAuthConfig {
-                location: match api_key.location {
-                    RuntimeApiKeyLocation::Header => ApiKeyLocation::Header,
-                    RuntimeApiKeyLocation::Query => ApiKeyLocation::Query,
-                },
-                name: api_key.name.clone(),
-                value: api_key.value.clone(),
-            })
+            if auth.kind == RestAuthKind::ApiKey {
+                auth.api_key.as_ref().map(|api_key| ApiKeyAuthConfig {
+                    location: match api_key.location {
+                        RuntimeApiKeyLocation::Header => ApiKeyLocation::Header,
+                        RuntimeApiKeyLocation::Query => ApiKeyLocation::Query,
+                    },
+                    name: api_key.name.clone(),
+                    value: api_key.value.clone(),
+                })
+            } else {
+                None
+            }
+        }),
+        oauth2_auth: rest.auth.as_ref().and_then(|auth| {
+            if auth.kind == RestAuthKind::OAuth2ClientCredentials {
+                auth.oauth2_client_credentials.as_ref().map(|oauth2| {
+                    OAuth2ClientCredentialsAuthConfig {
+                        token_url: oauth2.token_url.clone(),
+                        client_id: oauth2.client_id.clone(),
+                        client_secret: oauth2.client_secret.clone(),
+                        scope: oauth2.scope.clone(),
+                    }
+                })
+            } else {
+                None
+            }
         }),
     })
 }
