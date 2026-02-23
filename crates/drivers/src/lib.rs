@@ -26,6 +26,7 @@ const DEFAULT_DB_RETRY_MAX_DELAY_MS: u64 = 2_000;
 const DEFAULT_DB_RETRY_JITTER_PERCENT: u32 = 20;
 const DEFAULT_DB_CIRCUIT_FAILURE_THRESHOLD: u32 = 5;
 const DEFAULT_DB_CIRCUIT_OPEN_TIMEOUT_MS: u64 = 30_000;
+const DEFAULT_STREAM_MAX_BATCH_RECORDS: u32 = 500;
 
 /// Errors returned while fetching data from external systems.
 #[derive(Debug, Error)]
@@ -340,6 +341,142 @@ impl ExternalSystem for BinaryFileDriver {
                 "application/octet-stream",
             ),
         }])
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamSourceKind {
+    Kafka,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamStartOffset {
+    Earliest,
+    Latest,
+}
+
+#[derive(Debug, Clone)]
+pub struct KafkaStreamConfig {
+    pub brokers: Vec<String>,
+    pub topic: String,
+    pub group_id: String,
+    pub format: PayloadFormat,
+    pub max_batch_records: Option<u32>,
+    pub poll_timeout_ms: Option<u64>,
+    pub start_offset: Option<StreamStartOffset>,
+    pub mvp_input: InputSource,
+}
+
+#[derive(Debug, Clone)]
+pub struct StreamConfig {
+    pub source: StreamSourceKind,
+    pub kafka: Option<KafkaStreamConfig>,
+}
+
+pub struct StreamDriver {
+    config: StreamConfig,
+    metadata: RecordMetadata,
+}
+
+impl StreamDriver {
+    pub fn new(config: StreamConfig, metadata: RecordMetadata) -> Self {
+        Self { config, metadata }
+    }
+
+    fn fetch_kafka_mvp(
+        &self,
+        kafka: &KafkaStreamConfig,
+    ) -> Result<Vec<ExternalRecord>, DriverError> {
+        let max_records = kafka
+            .max_batch_records
+            .unwrap_or(DEFAULT_STREAM_MAX_BATCH_RECORDS)
+            .max(1) as usize;
+
+        let locator = format!("kafka://{}?group_id={}", kafka.topic, kafka.group_id);
+
+        match kafka.format {
+            PayloadFormat::Json => {
+                let reader = kafka.mvp_input.open_bufread()?;
+                let base = metadata_from_source(
+                    self.metadata.clone(),
+                    &kafka.mvp_input,
+                    "application/x-ndjson",
+                );
+                let metadata = metadata_with_source_details(base, "stream/kafka", Some(locator));
+                let mut records = Vec::new();
+
+                for (idx, line) in reader.lines().enumerate() {
+                    if records.len() >= max_records {
+                        break;
+                    }
+                    let line = line?;
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+
+                    let payload: serde_json::Value =
+                        serde_json::from_str(&line).map_err(|source| DriverError::InvalidJson {
+                            line: idx + 1,
+                            source,
+                        })?;
+                    records.push(ExternalRecord {
+                        payload: Payload::from_json(payload),
+                        metadata: metadata.clone(),
+                    });
+                }
+
+                Ok(records)
+            }
+            PayloadFormat::Text => {
+                let reader = kafka.mvp_input.open_bufread()?;
+                let base =
+                    metadata_from_source(self.metadata.clone(), &kafka.mvp_input, "text/plain");
+                let metadata = metadata_with_source_details(base, "stream/kafka", Some(locator));
+                let mut records = Vec::new();
+
+                for line in reader.lines() {
+                    if records.len() >= max_records {
+                        break;
+                    }
+                    let line = line?;
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    records.push(ExternalRecord {
+                        payload: Payload::from_text(line),
+                        metadata: metadata.clone(),
+                    });
+                }
+
+                Ok(records)
+            }
+            PayloadFormat::Binary => {
+                let base = metadata_from_source(
+                    self.metadata.clone(),
+                    &kafka.mvp_input,
+                    "application/octet-stream",
+                );
+                let metadata = metadata_with_source_details(base, "stream/kafka", Some(locator));
+                let payload = Payload::from_bytes(kafka.mvp_input.read_all()?);
+                Ok(vec![ExternalRecord { payload, metadata }])
+            }
+            PayloadFormat::Unknown => Err(DriverError::InvalidResponse(
+                "stream.kafka.format must be explicit (json/text/binary)".to_string(),
+            )),
+        }
+    }
+}
+
+impl ExternalSystem for StreamDriver {
+    fn fetch(&mut self) -> Result<Vec<ExternalRecord>, DriverError> {
+        match self.config.source {
+            StreamSourceKind::Kafka => {
+                let kafka = self.config.kafka.as_ref().ok_or_else(|| {
+                    DriverError::InvalidResponse("stream.kafka config is required".to_string())
+                })?;
+                self.fetch_kafka_mvp(kafka)
+            }
+        }
     }
 }
 

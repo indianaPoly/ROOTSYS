@@ -12,16 +12,18 @@ use drivers::{
     CircuitBreakerConfig as DriverCircuitBreakerConfig,
     CursorPaginationConfig as DriverCursorPaginationConfig, DbConfig, DbDriver, DbKind,
     DbRetryConfig as DriverDbRetryConfig, ExternalSystem, InputSource, JsonlDriver,
-    OAuth2ClientCredentialsAuthConfig, PagePaginationConfig as DriverPagePaginationConfig,
-    PostgresTlsMode as DriverPostgresTlsMode, RestConfig, RestDriver,
-    RestPaginationConfig as DriverRestPaginationConfig,
+    KafkaStreamConfig as DriverKafkaStreamConfig, OAuth2ClientCredentialsAuthConfig,
+    PagePaginationConfig as DriverPagePaginationConfig, PostgresTlsMode as DriverPostgresTlsMode,
+    RestConfig, RestDriver, RestPaginationConfig as DriverRestPaginationConfig,
     RestPaginationKind as DriverRestPaginationKind, RestRetryConfig as DriverRestRetryConfig,
-    TextLineDriver,
+    StreamConfig as DriverStreamConfig, StreamDriver, StreamSourceKind as DriverStreamSourceKind,
+    StreamStartOffset as DriverStreamStartOffset, TextLineDriver,
 };
 use runtime::{
     ApiKeyLocation as RuntimeApiKeyLocation, ContractRegistry, DbKind as RuntimeDbKind, DriverKind,
     ExternalInterface, IntegrationPipeline, PostgresTlsMode as RuntimePostgresTlsMode,
     RestAuthKind, RestPaginationKind as RuntimeRestPaginationKind,
+    StreamSourceKind as RuntimeStreamSourceKind, StreamStartOffset as RuntimeStreamStartOffset,
 };
 
 #[derive(Debug, Parser)]
@@ -139,6 +141,10 @@ fn build_external_driver(
         DriverKind::Db => {
             let config = db_config_from_interface(interface)?;
             Box::new(DbDriver::new(config, metadata))
+        }
+        DriverKind::Stream => {
+            let config = stream_config_from_interface(interface)?;
+            Box::new(StreamDriver::new(config, metadata))
         }
     };
     Ok(driver)
@@ -684,6 +690,36 @@ fn db_config_from_interface(
             }
         }),
     })
+}
+
+fn stream_config_from_interface(
+    interface: &ExternalInterface,
+) -> Result<DriverStreamConfig, Box<dyn std::error::Error>> {
+    let stream = interface
+        .driver
+        .stream
+        .as_ref()
+        .ok_or("stream driver config is required")?;
+
+    let source = match stream.source {
+        RuntimeStreamSourceKind::Kafka => DriverStreamSourceKind::Kafka,
+    };
+
+    let kafka = stream.kafka.as_ref().map(|kafka| DriverKafkaStreamConfig {
+        brokers: kafka.brokers.clone(),
+        topic: kafka.topic.clone(),
+        group_id: kafka.group_id.clone(),
+        format: kafka.format,
+        max_batch_records: kafka.max_batch_records,
+        poll_timeout_ms: kafka.poll_timeout_ms,
+        start_offset: kafka.start_offset.map(|offset| match offset {
+            RuntimeStreamStartOffset::Earliest => DriverStreamStartOffset::Earliest,
+            RuntimeStreamStartOffset::Latest => DriverStreamStartOffset::Latest,
+        }),
+        mvp_input: InputSource::from_str(&kafka.mvp_input),
+    });
+
+    Ok(DriverStreamConfig { source, kafka })
 }
 
 #[cfg(test)]

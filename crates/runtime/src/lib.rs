@@ -195,6 +195,8 @@ pub struct DriverSpec {
     pub rest: Option<RestDriverConfig>,
     #[serde(default)]
     pub db: Option<DbDriverConfig>,
+    #[serde(default)]
+    pub stream: Option<StreamDriverConfig>,
 }
 
 impl Default for DriverSpec {
@@ -206,6 +208,7 @@ impl Default for DriverSpec {
             filename: None,
             rest: None,
             db: None,
+            stream: None,
         }
     }
 }
@@ -220,6 +223,44 @@ pub enum DriverKind {
     Binary,
     Rest,
     Db,
+    Stream,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StreamDriverConfig {
+    pub source: StreamSourceKind,
+    #[serde(default)]
+    pub kafka: Option<KafkaStreamConfig>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum StreamSourceKind {
+    Kafka,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KafkaStreamConfig {
+    pub brokers: Vec<String>,
+    pub topic: String,
+    pub group_id: String,
+    pub format: PayloadFormat,
+    #[serde(default)]
+    pub max_batch_records: Option<u32>,
+    #[serde(default)]
+    pub poll_timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub start_offset: Option<StreamStartOffset>,
+    pub mvp_input: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum StreamStartOffset {
+    Earliest,
+    Latest,
 }
 
 /// REST driver configuration payload.
@@ -474,6 +515,15 @@ impl ExternalInterface {
                         code: "REST_DB_CONFLICT".to_string(),
                         path: "/driver/db".to_string(),
                         message: "db config must be omitted when driver.kind is 'rest'".to_string(),
+                    });
+                }
+
+                if self.driver.stream.is_some() {
+                    errors.push(ValidationError {
+                        code: "REST_STREAM_CONFLICT".to_string(),
+                        path: "/driver/stream".to_string(),
+                        message: "stream config must be omitted when driver.kind is 'rest'"
+                            .to_string(),
                     });
                 }
 
@@ -865,6 +915,15 @@ impl ExternalInterface {
                     });
                 }
 
+                if self.driver.stream.is_some() {
+                    errors.push(ValidationError {
+                        code: "DB_STREAM_CONFLICT".to_string(),
+                        path: "/driver/stream".to_string(),
+                        message: "stream config must be omitted when driver.kind is 'db'"
+                            .to_string(),
+                    });
+                }
+
                 if self.driver.input.is_some() {
                     errors.push(ValidationError {
                         code: "DB_INPUT_CONFLICT".to_string(),
@@ -1026,6 +1085,136 @@ impl ExternalInterface {
                     }
                 }
             }
+            DriverKind::Stream => {
+                if self.driver.stream.is_none() {
+                    errors.push(ValidationError {
+                        code: "STREAM_CONFIG_REQUIRED".to_string(),
+                        path: "/driver/stream".to_string(),
+                        message: "stream config is required when driver.kind is 'stream'"
+                            .to_string(),
+                    });
+                }
+
+                if self.driver.rest.is_some() {
+                    errors.push(ValidationError {
+                        code: "STREAM_REST_CONFLICT".to_string(),
+                        path: "/driver/rest".to_string(),
+                        message: "rest config must be omitted when driver.kind is 'stream'"
+                            .to_string(),
+                    });
+                }
+
+                if self.driver.db.is_some() {
+                    errors.push(ValidationError {
+                        code: "STREAM_DB_CONFLICT".to_string(),
+                        path: "/driver/db".to_string(),
+                        message: "db config must be omitted when driver.kind is 'stream'"
+                            .to_string(),
+                    });
+                }
+
+                if self.driver.input.is_some() {
+                    errors.push(ValidationError {
+                        code: "STREAM_INPUT_CONFLICT".to_string(),
+                        path: "/driver/input".to_string(),
+                        message: "input must be omitted when driver.kind is 'stream'".to_string(),
+                    });
+                }
+
+                if let Some(stream) = &self.driver.stream {
+                    match stream.source {
+                        StreamSourceKind::Kafka => {
+                            if stream.kafka.is_none() {
+                                errors.push(ValidationError {
+                                    code: "STREAM_KAFKA_CONFIG_REQUIRED".to_string(),
+                                    path: "/driver/stream/kafka".to_string(),
+                                    message:
+                                        "kafka config is required when stream.source is 'kafka'"
+                                            .to_string(),
+                                });
+                            }
+
+                            if let Some(kafka) = &stream.kafka {
+                                if kafka.brokers.is_empty() {
+                                    errors.push(ValidationError {
+                                        code: "STREAM_KAFKA_BROKERS_REQUIRED".to_string(),
+                                        path: "/driver/stream/kafka/brokers".to_string(),
+                                        message: "at least one broker is required".to_string(),
+                                    });
+                                }
+
+                                for (idx, broker) in kafka.brokers.iter().enumerate() {
+                                    if broker.trim().is_empty() {
+                                        errors.push(ValidationError {
+                                            code: "STREAM_KAFKA_BROKER_EMPTY".to_string(),
+                                            path: format!("/driver/stream/kafka/brokers/{}", idx),
+                                            message: "broker must be a non-empty string"
+                                                .to_string(),
+                                        });
+                                    }
+                                }
+
+                                if kafka.topic.trim().is_empty() {
+                                    errors.push(ValidationError {
+                                        code: "STREAM_KAFKA_TOPIC_EMPTY".to_string(),
+                                        path: "/driver/stream/kafka/topic".to_string(),
+                                        message: "topic must be a non-empty string".to_string(),
+                                    });
+                                }
+
+                                if kafka.group_id.trim().is_empty() {
+                                    errors.push(ValidationError {
+                                        code: "STREAM_KAFKA_GROUP_ID_EMPTY".to_string(),
+                                        path: "/driver/stream/kafka/group_id".to_string(),
+                                        message: "group_id must be a non-empty string".to_string(),
+                                    });
+                                }
+
+                                if kafka.format == PayloadFormat::Unknown {
+                                    errors.push(ValidationError {
+                                        code: "STREAM_KAFKA_FORMAT_REQUIRED".to_string(),
+                                        path: "/driver/stream/kafka/format".to_string(),
+                                        message: "format must be one of json/text/binary"
+                                            .to_string(),
+                                    });
+                                }
+
+                                if let Some(max_batch_records) = kafka.max_batch_records {
+                                    if max_batch_records == 0 {
+                                        errors.push(ValidationError {
+                                            code: "STREAM_KAFKA_MAX_BATCH_INVALID".to_string(),
+                                            path: "/driver/stream/kafka/max_batch_records"
+                                                .to_string(),
+                                            message: "max_batch_records must be > 0 when provided"
+                                                .to_string(),
+                                        });
+                                    }
+                                }
+
+                                if let Some(poll_timeout_ms) = kafka.poll_timeout_ms {
+                                    if poll_timeout_ms == 0 {
+                                        errors.push(ValidationError {
+                                            code: "STREAM_KAFKA_POLL_TIMEOUT_INVALID".to_string(),
+                                            path: "/driver/stream/kafka/poll_timeout_ms"
+                                                .to_string(),
+                                            message: "poll_timeout_ms must be > 0 when provided"
+                                                .to_string(),
+                                        });
+                                    }
+                                }
+
+                                if kafka.mvp_input.trim().is_empty() {
+                                    errors.push(ValidationError {
+                                        code: "STREAM_KAFKA_MVP_INPUT_EMPTY".to_string(),
+                                        path: "/driver/stream/kafka/mvp_input".to_string(),
+                                        message: "mvp_input must be a non-empty string".to_string(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             _ => {
                 if self.driver.rest.is_some() {
                     errors.push(ValidationError {
@@ -1041,6 +1230,15 @@ impl ExternalInterface {
                         code: "DRIVER_DB_UNEXPECTED".to_string(),
                         path: "/driver/db".to_string(),
                         message: "db config must be omitted when driver.kind is not 'db'"
+                            .to_string(),
+                    });
+                }
+
+                if self.driver.stream.is_some() {
+                    errors.push(ValidationError {
+                        code: "DRIVER_STREAM_UNEXPECTED".to_string(),
+                        path: "/driver/stream".to_string(),
+                        message: "stream config must be omitted when driver.kind is not 'stream'"
                             .to_string(),
                     });
                 }
@@ -1349,6 +1547,7 @@ fn driver_kind_label(kind: DriverKind) -> &'static str {
         DriverKind::Binary => "binary",
         DriverKind::Rest => "rest",
         DriverKind::Db => "db",
+        DriverKind::Stream => "stream",
     }
 }
 
@@ -1425,6 +1624,7 @@ mod tests {
             include_str!("../../../tests/fixtures/interfaces/qms.db.json"),
             include_str!("../../../tests/fixtures/interfaces/postgres.sample.json"),
             include_str!("../../../tests/fixtures/interfaces/mysql.sample.json"),
+            include_str!("../../../tests/fixtures/interfaces/stream.kafka.sample.json"),
         ];
 
         for fixture in fixtures {
@@ -2188,6 +2388,82 @@ mod tests {
         let errors = interface.validate().unwrap_err();
         assert!(has_path(&errors, "/record_id_paths"));
         assert!(has_code(&errors, "RECORD_ID_POLICY_STRICT_REQUIRES_PATHS"));
+    }
+
+    #[test]
+    fn errors_when_kind_stream_without_stream_config() {
+        let json = r#"{
+            "name": "mes-stream",
+            "version": "v1",
+            "driver": { "kind": "stream" }
+        }"#;
+
+        let interface: ExternalInterface = serde_json::from_str(json).unwrap();
+        let errors = interface.validate().unwrap_err();
+        assert!(has_code(&errors, "STREAM_CONFIG_REQUIRED"));
+    }
+
+    #[test]
+    fn errors_when_stream_kafka_fields_invalid() {
+        let json = r#"{
+            "name": "mes-stream",
+            "version": "v1",
+            "driver": {
+                "kind": "stream",
+                "stream": {
+                    "source": "kafka",
+                    "kafka": {
+                        "brokers": ["", "localhost:9092"],
+                        "topic": "",
+                        "group_id": "",
+                        "format": "unknown",
+                        "max_batch_records": 0,
+                        "poll_timeout_ms": 0,
+                        "mvp_input": ""
+                    }
+                }
+            }
+        }"#;
+
+        let interface: ExternalInterface = serde_json::from_str(json).unwrap();
+        let errors = interface.validate().unwrap_err();
+        assert!(has_code(&errors, "STREAM_KAFKA_BROKER_EMPTY"));
+        assert!(has_code(&errors, "STREAM_KAFKA_TOPIC_EMPTY"));
+        assert!(has_code(&errors, "STREAM_KAFKA_GROUP_ID_EMPTY"));
+        assert!(has_code(&errors, "STREAM_KAFKA_FORMAT_REQUIRED"));
+        assert!(has_code(&errors, "STREAM_KAFKA_MAX_BATCH_INVALID"));
+        assert!(has_code(&errors, "STREAM_KAFKA_POLL_TIMEOUT_INVALID"));
+        assert!(has_code(&errors, "STREAM_KAFKA_MVP_INPUT_EMPTY"));
+    }
+
+    #[test]
+    fn stream_kafka_valid_config_passes_validation() {
+        let json = r#"{
+            "name": "mes-stream",
+            "version": "v1",
+            "driver": {
+                "kind": "stream",
+                "stream": {
+                    "source": "kafka",
+                    "kafka": {
+                        "brokers": ["localhost:9092"],
+                        "topic": "mes.events",
+                        "group_id": "rootsys.mes.v1",
+                        "format": "json",
+                        "max_batch_records": 500,
+                        "poll_timeout_ms": 1000,
+                        "start_offset": "latest",
+                        "mvp_input": "tests/fixtures/inputs/stream.kafka.sample.jsonl"
+                    }
+                }
+            },
+            "payload_format": "json",
+            "record_id_policy": "hash_fallback",
+            "record_id_paths": ["/event_id"]
+        }"#;
+
+        let interface: ExternalInterface = serde_json::from_str(json).unwrap();
+        interface.validate().unwrap();
     }
 
     #[test]

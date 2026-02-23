@@ -1,0 +1,23 @@
+{
+  "name": "mes-stream",
+  "version": "v1",
+  "driver": {
+    "kind": "stream",
+    "stream": {
+      "source": "kafka",
+      "kafka": {
+        "brokers": ["localhost:9092"],
+        "topic": "mes.events",
+        "group_id": "rootsys.mes.v1",
+        "format": "json",
+        "max_batch_records": 500,
+        "poll_timeout_ms": 1000,
+        "start_offset": "latest",
+        "mvp_input": "tests/fixtures/inputs/stream.kafka.sample.jsonl"
+      }
+    }
+  },
+  "payload_format": "json",
+  "record_id_policy": "hash_fallback",
+  "record_id_paths": ["/event_id"]
+}
