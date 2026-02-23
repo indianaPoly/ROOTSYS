@@ -9,7 +9,9 @@ use drivers::{
     BinaryFileDriver, DbConfig, DbDriver, DbKind, ExternalSystem, InputSource, JsonlDriver,
     RestConfig, RestDriver, TextLineDriver,
 };
-use runtime::{DbKind as RuntimeDbKind, DriverKind, ExternalInterface, IntegrationPipeline};
+use runtime::{
+    ContractRegistry, DbKind as RuntimeDbKind, DriverKind, ExternalInterface, IntegrationPipeline,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "rootsys-shell")]
@@ -27,6 +29,8 @@ struct Args {
     source: Option<String>,
     #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
     format: InputFormat,
+    #[arg(long, default_value = "system/contracts/reference/allowlist.json")]
+    contract_registry: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -41,6 +45,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     let interface = ExternalInterface::load(&args.interface)?;
+    let contract_registry = ContractRegistry::load(&args.contract_registry)?;
+    interface.validate_against_registry(&contract_registry)?;
     let source = args
         .source
         .clone()

@@ -1,0 +1,12 @@
+{
+  "allowlist": [
+    { "name": "mes", "version": "v1" },
+    { "name": "qms", "version": "v1" },
+    { "name": "rest-sample", "version": "v1" },
+    { "name": "postgres-sample", "version": "v1" },
+    { "name": "mysql-sample", "version": "v1" },
+    { "name": "external-api", "version": "v1" },
+    { "name": "local-db", "version": "v1" },
+    { "name": "ops-db", "version": "v1" }
+  ]
+}

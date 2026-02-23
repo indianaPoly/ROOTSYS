@@ -15,6 +15,12 @@ pub enum InterfaceError {
     Json(#[from] serde_json::Error),
     #[error("invalid interface definition:\n{0}")]
     Validation(#[from] ValidationErrors),
+    #[error("failed to read contract registry file: {0}")]
+    ContractRegistryIo(#[source] std::io::Error),
+    #[error("failed to parse contract registry json: {0}")]
+    ContractRegistryJson(#[source] serde_json::Error),
+    #[error("invalid contract registry definition:\n{0}")]
+    ContractRegistryValidation(#[from] ContractRegistryValidationErrors),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +48,102 @@ impl std::fmt::Display for ValidationErrors {
 
 impl std::error::Error for ValidationErrors {}
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContractRegistryValidationError {
+    pub path: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContractRegistryValidationErrors(pub Vec<ContractRegistryValidationError>);
+
+impl std::fmt::Display for ContractRegistryValidationErrors {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.0.is_empty() {
+            return write!(f, "(no validation errors)");
+        }
+
+        writeln!(f, "{} error(s):", self.0.len())?;
+        for error in &self.0 {
+            writeln!(f, "- {}: {}", error.path, error.message)?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for ContractRegistryValidationErrors {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContractRegistry {
+    pub allowlist: Vec<AllowedInterface>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AllowedInterface {
+    pub name: String,
+    pub version: String,
+}
+
+impl ContractRegistry {
+    pub fn load(path: &std::path::Path) -> Result<Self, InterfaceError> {
+        let content = fs::read_to_string(path).map_err(InterfaceError::ContractRegistryIo)?;
+        let registry: ContractRegistry =
+            serde_json::from_str(&content).map_err(InterfaceError::ContractRegistryJson)?;
+        registry.validate()?;
+        Ok(registry)
+    }
+
+    pub fn validate(&self) -> Result<(), ContractRegistryValidationErrors> {
+        let mut errors = Vec::new();
+
+        if self.allowlist.is_empty() {
+            errors.push(ContractRegistryValidationError {
+                path: "/allowlist".to_string(),
+                message: "must contain at least one (name, version) pair".to_string(),
+            });
+        }
+
+        let mut seen = std::collections::HashSet::new();
+        for (idx, entry) in self.allowlist.iter().enumerate() {
+            if entry.name.trim().is_empty() {
+                errors.push(ContractRegistryValidationError {
+                    path: format!("/allowlist/{idx}/name"),
+                    message: "must be a non-empty string".to_string(),
+                });
+            }
+
+            if entry.version.trim().is_empty() {
+                errors.push(ContractRegistryValidationError {
+                    path: format!("/allowlist/{idx}/version"),
+                    message: "must be a non-empty string".to_string(),
+                });
+            }
+
+            let key = (entry.name.clone(), entry.version.clone());
+            if !seen.insert(key) {
+                errors.push(ContractRegistryValidationError {
+                    path: format!("/allowlist/{idx}"),
+                    message: "duplicate (name, version) entry".to_string(),
+                });
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(ContractRegistryValidationErrors(errors))
+        }
+    }
+
+    pub fn is_allowed(&self, name: &str, version: &str) -> bool {
+        self.allowlist
+            .iter()
+            .any(|entry| entry.name == name && entry.version == version)
+    }
+}
+
 /// External system interface definition for the integration pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -56,6 +158,16 @@ pub struct ExternalInterface {
     pub record_id_paths: Vec<String>,
     #[serde(default)]
     pub required_paths: Vec<String>,
+    #[serde(default)]
+    pub record_id_policy: RecordIdPolicy,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordIdPolicy {
+    Strict,
+    #[default]
+    HashFallback,
 }
 
 /// Driver selection and connection details for an external system.
@@ -171,6 +283,14 @@ impl ExternalInterface {
 
         validate_unique_list(&mut errors, "/required_paths", &self.required_paths);
         validate_unique_list(&mut errors, "/record_id_paths", &self.record_id_paths);
+
+        if self.record_id_policy == RecordIdPolicy::Strict && self.record_id_paths.is_empty() {
+            errors.push(ValidationError {
+                path: "/record_id_paths".to_string(),
+                message: "must contain at least one pointer when record_id_policy is 'strict'"
+                    .to_string(),
+            });
+        }
 
         match self.driver.kind {
             DriverKind::Rest => {
@@ -303,6 +423,23 @@ impl ExternalInterface {
             version: self.version.clone(),
         }
     }
+
+    pub fn validate_against_registry(
+        &self,
+        registry: &ContractRegistry,
+    ) -> Result<(), ValidationErrors> {
+        if registry.is_allowed(&self.name, &self.version) {
+            Ok(())
+        } else {
+            Err(ValidationErrors(vec![ValidationError {
+                path: "/name".to_string(),
+                message: format!(
+                    "interface '{}:{}' is not allowlisted in contract registry",
+                    self.name, self.version
+                ),
+            }]))
+        }
+    }
 }
 
 fn validate_pointer_list(errors: &mut Vec<ValidationError>, base_path: &str, pointers: &[String]) {
@@ -395,7 +532,19 @@ impl IntegrationPipeline {
                 continue;
             }
 
-            let record_id = self.build_record_id(&record.payload);
+            let record_id = match self.build_record_id(&record.payload) {
+                Ok(value) => value,
+                Err(error) => {
+                    outcome.dead_letters.push(DeadLetter {
+                        source: source.to_string(),
+                        interface: self.interface.reference(),
+                        payload: record.payload,
+                        metadata: record.metadata,
+                        errors: vec![error],
+                    });
+                    continue;
+                }
+            };
             let ingested_at_unix_ms = unix_ms_now();
 
             outcome.records.push(IntegrationRecord {
@@ -448,21 +597,35 @@ impl IntegrationPipeline {
     }
 
     /// Build an idempotent record id using the interface key rules.
-    fn build_record_id(&self, payload: &Payload) -> String {
+    fn build_record_id(&self, payload: &Payload) -> Result<String, String> {
         if let Payload::Json(value) = payload {
             let mut parts = Vec::new();
+            let mut missing = Vec::new();
             for pointer in &self.interface.record_id_paths {
-                if let Some(value) = value.pointer(pointer) {
-                    parts.push(value_to_string(value));
+                match value.pointer(pointer) {
+                    Some(inner) if !inner.is_null() => parts.push(value_to_string(inner)),
+                    _ => missing.push(pointer.clone()),
                 }
             }
 
             if !parts.is_empty() {
-                return parts.join("|");
+                return Ok(parts.join("|"));
             }
+
+            if self.interface.record_id_policy == RecordIdPolicy::Strict {
+                return Err(format!(
+                    "record_id strict policy violation: failed to resolve record id from paths: {}",
+                    missing.join(", ")
+                ));
+            }
+        } else if self.interface.record_id_policy == RecordIdPolicy::Strict {
+            return Err(
+                "record_id strict policy violation: strict mode requires JSON payload with resolvable record_id_paths"
+                    .to_string(),
+            );
         }
 
-        hash_payload(payload)
+        Ok(hash_payload(payload))
     }
 
     /// Check payload format against interface expectations.
@@ -631,5 +794,113 @@ mod tests {
         let interface: ExternalInterface = serde_json::from_str(json).unwrap();
         let errors = interface.validate().unwrap_err();
         assert!(has_path(&errors, "/driver/rest/items_pointer"));
+    }
+
+    #[test]
+    fn strict_record_id_policy_requires_paths() {
+        let json = r#"{
+            "name": "mes",
+            "version": "v1",
+            "record_id_policy": "strict",
+            "driver": { "kind": "jsonl", "input": "-" }
+        }"#;
+
+        let interface: ExternalInterface = serde_json::from_str(json).unwrap();
+        let errors = interface.validate().unwrap_err();
+        assert!(has_path(&errors, "/record_id_paths"));
+    }
+
+    #[test]
+    fn strict_record_id_policy_dead_letters_when_paths_missing() {
+        let interface_json = r#"{
+            "name": "mes",
+            "version": "v1",
+            "record_id_policy": "strict",
+            "record_id_paths": ["/defect_id"],
+            "driver": { "kind": "jsonl", "input": "-" },
+            "payload_format": "json"
+        }"#;
+        let interface: ExternalInterface = serde_json::from_str(interface_json).unwrap();
+        interface.validate().unwrap();
+
+        let pipeline = IntegrationPipeline::new(interface);
+        let input = ExternalRecord {
+            payload: Payload::from_json(serde_json::json!({ "other": 1 })),
+            metadata: Default::default(),
+        };
+
+        let output = pipeline.integrate("mes", vec![input]);
+        assert_eq!(output.records.len(), 0);
+        assert_eq!(output.dead_letters.len(), 1);
+        assert!(output.dead_letters[0].errors[0].contains("strict policy violation"));
+    }
+
+    #[test]
+    fn hash_fallback_policy_uses_hash_when_paths_missing() {
+        let interface_json = r#"{
+            "name": "mes",
+            "version": "v1",
+            "record_id_paths": ["/defect_id"],
+            "driver": { "kind": "jsonl", "input": "-" },
+            "payload_format": "json"
+        }"#;
+        let interface: ExternalInterface = serde_json::from_str(interface_json).unwrap();
+        interface.validate().unwrap();
+
+        let pipeline = IntegrationPipeline::new(interface);
+        let input = ExternalRecord {
+            payload: Payload::from_json(serde_json::json!({ "other": 1 })),
+            metadata: Default::default(),
+        };
+
+        let output = pipeline.integrate("mes", vec![input]);
+        assert_eq!(output.records.len(), 1);
+        assert_eq!(output.dead_letters.len(), 0);
+        assert!(!output.records[0].record_id.is_empty());
+    }
+
+    #[test]
+    fn contract_registry_rejects_non_allowlisted_interface() {
+        let interface = ExternalInterface {
+            name: "unknown".to_string(),
+            version: "v1".to_string(),
+            driver: DriverSpec::default(),
+            payload_format: PayloadFormat::Unknown,
+            record_id_paths: vec![],
+            required_paths: vec![],
+            record_id_policy: RecordIdPolicy::HashFallback,
+        };
+
+        let registry = ContractRegistry {
+            allowlist: vec![AllowedInterface {
+                name: "mes".to_string(),
+                version: "v1".to_string(),
+            }],
+        };
+
+        let err = interface.validate_against_registry(&registry).unwrap_err();
+        assert!(has_path(&err, "/name"));
+    }
+
+    #[test]
+    fn contract_registry_accepts_allowlisted_interface() {
+        let interface = ExternalInterface {
+            name: "mes".to_string(),
+            version: "v1".to_string(),
+            driver: DriverSpec::default(),
+            payload_format: PayloadFormat::Unknown,
+            record_id_paths: vec![],
+            required_paths: vec![],
+            record_id_policy: RecordIdPolicy::HashFallback,
+        };
+
+        let registry = ContractRegistry {
+            allowlist: vec![AllowedInterface {
+                name: "mes".to_string(),
+                version: "v1".to_string(),
+            }],
+        };
+
+        interface.validate_against_registry(&registry).unwrap();
     }
 }

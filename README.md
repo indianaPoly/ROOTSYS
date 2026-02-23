@@ -39,6 +39,7 @@ python3 scripts/create_sample_dbs.py
 ```bash
 cargo run -p shell -- \
   --interface path/to/interface.json \
+  --contract-registry system/contracts/reference/allowlist.json \
   --input path/to/input.jsonl \
   --output path/to/output.jsonl
 ```
@@ -47,6 +48,7 @@ cargo run -p shell -- \
 ```bash
 cargo run -p shell -- \
   --interface path/to/interface.json \
+  --contract-registry system/contracts/reference/allowlist.json \
   --input path/to/input.bin \
   --output path/to/output.jsonl \
   --format binary
@@ -56,6 +58,7 @@ cargo run -p shell -- \
 ```bash
 cargo run -p shell -- \
   --interface path/to/rest-interface.json \
+  --contract-registry system/contracts/reference/allowlist.json \
   --output path/to/output.jsonl
 ```
 
@@ -63,12 +66,14 @@ cargo run -p shell -- \
 ```bash
 cargo run -p shell -- \
   --interface tests/fixtures/interfaces/mes.db.json \
+  --contract-registry system/contracts/reference/allowlist.json \
   --output /tmp/mes.output.jsonl
 ```
 
 ```bash
 cargo run -p shell -- \
   --interface tests/fixtures/interfaces/qms.db.json \
+  --contract-registry system/contracts/reference/allowlist.json \
   --output /tmp/qms.output.jsonl
 ```
 
@@ -76,12 +81,14 @@ cargo run -p shell -- \
 ```bash
 cargo run -p shell -- \
   --interface path/to/postgres.interface.json \
+  --contract-registry system/contracts/reference/allowlist.json \
   --output /tmp/postgres.output.jsonl
 ```
 
 ```bash
 cargo run -p shell -- \
   --interface path/to/mysql.interface.json \
+  --contract-registry system/contracts/reference/allowlist.json \
   --output /tmp/mysql.output.jsonl
 ```
 
@@ -105,10 +112,18 @@ The interface JSON drives the pipeline. Example:
     "content_type": "application/x-ndjson"
   },
   "payload_format": "json",
+  "record_id_policy": "hash_fallback",
   "record_id_paths": ["/defect_id", "/lot_id"],
   "required_paths": ["/defect_id"]
 }
 ```
+
+- `record_id_policy` controls how record IDs are generated:
+  - `hash_fallback` (default): use `record_id_paths` when present, otherwise hash the payload.
+  - `strict`: require `record_id_paths` to resolve; unresolved IDs are emitted to DLQ.
+
+- Contract governance is enforced through `--contract-registry` (default: `system/contracts/reference/allowlist.json`).
+  The interface `(name, version)` pair must exist in the allowlist.
 
 ### Driver: REST
 ```json
