@@ -9,4 +9,5 @@ Entry point for docs/data.
 ## Contents
 - `README.md` (root): interface schema examples and output record format.
 - `docs/runbooks/integration_definition_of_done.md`: acceptance criteria for IntegrationRecord/DLQ/dedupe.
+- `docs/runbooks/idempotency_dedupe_strategy.md`: keying, replay, and dedupe strategy.
 - `system/contracts/reference/allowlist.json`: contract allowlist registry.

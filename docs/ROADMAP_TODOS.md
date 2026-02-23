@@ -51,7 +51,7 @@ Use it as the source of truth for priorities, and mirror each item into GitHub I
 - [x] Roadmap(A3-1): Implement retry/backoff policy for REST driver (with jitter)
 - [x] Roadmap(A3-2): Implement retry/backoff policy for DB driver (transient error classification)
 - [x] Roadmap(A3-3): Add circuit breaker for REST/DB drivers (open/half-open/close)
-- [ ] Roadmap(A3-4): Document idempotency + dedupe strategy across pipeline + fabric
+- [x] Roadmap(A3-4): Document idempotency + dedupe strategy across pipeline + fabric
 
 ## A4. DLQ Ops (Persistence/Replay/Lineage)
 - [ ] Roadmap(A4-1): Add DLQ sink interface (file today → pluggable sink)

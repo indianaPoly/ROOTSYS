@@ -379,6 +379,7 @@ Page/page_size pagination example:
 ## Merge Output
 - The merge layer outputs the same `IntegrationRecord` JSONL format.
 - When dedupe is enabled, it removes duplicates by `(source, interface.name, interface.version, record_id)`.
+- Operational strategy reference: `docs/runbooks/idempotency_dedupe_strategy.md`.
 
 ## Next Steps (Planned)
 1. Add REST auth helpers (OAuth, API keys) and pagination.
