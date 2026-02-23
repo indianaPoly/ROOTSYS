@@ -3,7 +3,9 @@
 Entry point for docs/runbooks.
 
 ## Purpose
-- TODO: define scope and ownership.
+- Scope: operational procedures and release-readiness checklists.
+- Owner: repository maintainers (`@indianaPoly`).
 
 ## Contents
-- TODO: list key files and contracts.
+- `docs/runbooks/integration_definition_of_done.md`: integration output DoD.
+- `docs/ROADMAP_TODOS.md`: operations-related roadmap items.

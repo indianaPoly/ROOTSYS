@@ -3,7 +3,9 @@
 Entry point for docs/ui.
 
 ## Purpose
-- TODO: define scope and ownership.
+- Scope: UI/App requirements for operator-facing analysis workflows.
+- Owner: repository maintainers (`@indianaPoly`).
 
 ## Contents
-- TODO: list key files and contracts.
+- `docs/ROADMAP_TODOS.md`: B8 roadmap tasks.
+- `docs/WHITE_PAPER.md`: user/app layer context.

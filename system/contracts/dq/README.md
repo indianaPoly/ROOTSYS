@@ -3,7 +3,9 @@
 Entry point for system/contracts/dq.
 
 ## Purpose
-- TODO: define scope and ownership.
+- Scope: data-quality rules tied to required paths and validation outcomes.
+- Owner: repository maintainers (`@indianaPoly`).
 
 ## Contents
-- TODO: list key files and contracts.
+- `crates/runtime/src/lib.rs`: payload validation and dead-letter generation logic.
+- `docs/runbooks/integration_definition_of_done.md`: quality acceptance checklist.

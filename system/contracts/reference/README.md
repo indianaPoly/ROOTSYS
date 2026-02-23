@@ -3,7 +3,8 @@
 Entry point for system/contracts/reference.
 
 ## Purpose
-- TODO: define scope and ownership.
+- Scope: reference contract governance artifacts used at runtime.
+- Owner: repository maintainers (`@indianaPoly`).
 
 ## Contents
-- TODO: list key files and contracts.
+- `system/contracts/reference/allowlist.json`: list of allowed interface `(name, version)` pairs.

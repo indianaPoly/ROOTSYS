@@ -3,7 +3,10 @@
 Entry point for system/contracts.
 
 ## Purpose
-- TODO: define scope and ownership.
+- Scope: contract schema, reference allowlist, and data quality contract artifacts.
+- Owner: repository maintainers (`@indianaPoly`).
 
 ## Contents
-- TODO: list key files and contracts.
+- `system/contracts/reference/allowlist.json`: enforced (name, version) allowlist registry.
+- `system/contracts/schemas/README.md`: schema definitions index.
+- `system/contracts/dq/README.md`: data-quality contract index.

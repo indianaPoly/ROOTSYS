@@ -3,7 +3,9 @@
 Entry point for system.
 
 ## Purpose
-- TODO: define scope and ownership.
+- Scope: machine-readable system contracts and pipeline specifications.
+- Owner: repository maintainers (`@indianaPoly`).
 
 ## Contents
-- TODO: list key files and contracts.
+- `system/contracts/README.md`: contract assets and governance references.
+- `system/pipelines/README.md`: pipeline-spec assets and structure.

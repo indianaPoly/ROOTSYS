@@ -3,7 +3,9 @@
 Entry point for docs/ontology.
 
 ## Purpose
-- TODO: define scope and ownership.
+- Scope: ontology-layer specifications for Defect/Cause/Evidence/CompositeCause.
+- Owner: repository maintainers (`@indianaPoly`).
 
 ## Contents
-- TODO: list key files and contracts.
+- `docs/ROADMAP_TODOS.md`: B6 roadmap tasks.
+- `docs/WHITE_PAPER.md`: ontology-layer rationale and R1/R2/R3 context.

@@ -3,7 +3,9 @@
 Entry point for system/pipelines/transforms.
 
 ## Purpose
-- TODO: define scope and ownership.
+- Scope: normalization/validation transforms from external payloads to integration records.
+- Owner: repository maintainers (`@indianaPoly`).
 
 ## Contents
-- TODO: list key files and contracts.
+- `crates/runtime/src/lib.rs`: integration pipeline and validation behavior.
+- `docs/runbooks/integration_definition_of_done.md`: transform output acceptance criteria.

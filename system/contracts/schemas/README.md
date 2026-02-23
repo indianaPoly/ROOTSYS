@@ -3,7 +3,8 @@
 Entry point for system/contracts/schemas.
 
 ## Purpose
-- TODO: define scope and ownership.
+- Scope: schema definitions and validation contracts for interfaces.
+- Owner: repository maintainers (`@indianaPoly`).
 
 ## Contents
-- TODO: list key files and contracts.
+- `crates/runtime/src/lib.rs`: `ExternalInterface` schema and validation logic.

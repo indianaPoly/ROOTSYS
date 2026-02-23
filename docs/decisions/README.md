@@ -3,7 +3,9 @@
 Entry point for docs/decisions.
 
 ## Purpose
-- TODO: define scope and ownership.
+- Scope: durable decision records for process, governance, and architecture conventions.
+- Owner: repository maintainers (`@indianaPoly`).
 
 ## Contents
-- TODO: list key files and contracts.
+- `docs/decisions/roadmap_tracking_conventions.md`: issue/label/milestone tracking conventions.
+- `docs/ROADMAP_TODOS.md`: source-of-truth roadmap checklist.

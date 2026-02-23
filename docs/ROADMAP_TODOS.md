@@ -26,15 +26,15 @@ Use it as the source of truth for priorities, and mirror each item into GitHub I
 ---
 
 ## A0. Foundations (Scope/Ownership/Docs)
-- [ ] Roadmap(A0-1): Define repo scope + ownership (docs/system)
-- [ ] Roadmap(A0-2): Replace placeholder entrypoint docs with real pointers (docs/**/README.md, system/**/README.md)
-- [ ] Roadmap(A0-3): Document Definition of Done for integration outputs (IntegrationRecord/DLQ/dedupe)
-- [ ] Roadmap(A0-4): Define labeling/milestone conventions for roadmap tracking
+- [x] Roadmap(A0-1): Define repo scope + ownership (docs/system)
+- [x] Roadmap(A0-2): Replace placeholder entrypoint docs with real pointers (docs/**/README.md, system/**/README.md)
+- [x] Roadmap(A0-3): Document Definition of Done for integration outputs (IntegrationRecord/DLQ/dedupe)
+- [x] Roadmap(A0-4): Define labeling/milestone conventions for roadmap tracking
 
 ## A1. Contracts & Interface Governance
 - [ ] Roadmap(A1-1): Define + validate ExternalInterface JSON schema (strict field validation)
-- [ ] Roadmap(A1-2): Add contract registry and enforce (interface.name, interface.version) allowlist
-- [ ] Roadmap(A1-3): Add record_id policy mode (strict vs hash fallback) and document behavior
+- [x] Roadmap(A1-2): Add contract registry and enforce (interface.name, interface.version) allowlist
+- [x] Roadmap(A1-3): Add record_id policy mode (strict vs hash fallback) and document behavior
 - [ ] Roadmap(A1-4): Improve validation reporting (structured error codes vs free-form strings)
 
 ## A2. Drivers (REST/DB/File) Productionization

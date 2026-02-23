@@ -3,7 +3,9 @@
 Entry point for docs/actions.
 
 ## Purpose
-- TODO: define scope and ownership.
+- Scope: action/policy/audit specifications for human decisions and governance.
+- Owner: repository maintainers (`@indianaPoly`).
 
 ## Contents
-- TODO: list key files and contracts.
+- `docs/ROADMAP_TODOS.md`: B7 roadmap tasks.
+- `docs/WHITE_PAPER.md`: action/policy/audit layer reference.

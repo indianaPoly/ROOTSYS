@@ -3,7 +3,9 @@
 Entry point for system/pipelines/sources.
 
 ## Purpose
-- TODO: define scope and ownership.
+- Scope: external source definitions for file/REST/DB/streaming ingestion.
+- Owner: repository maintainers (`@indianaPoly`).
 
 ## Contents
-- TODO: list key files and contracts.
+- `docs/ROADMAP_TODOS.md`: A2 and A5 source-driver roadmap scope.
+- `crates/drivers/src/lib.rs`: current source-driver implementations.

@@ -3,7 +3,9 @@
 Entry point for system/pipelines/schedules.
 
 ## Purpose
-- TODO: define scope and ownership.
+- Scope: scheduling, retries, and checkpoint policy specifications.
+- Owner: repository maintainers (`@indianaPoly`).
 
 ## Contents
-- TODO: list key files and contracts.
+- `docs/ROADMAP_TODOS.md`: A3 and A5 scheduling/resilience tasks.
+- `docs/WHITE_PAPER.md`: pipeline scheduling best-practice context.

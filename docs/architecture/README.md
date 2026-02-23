@@ -3,7 +3,9 @@
 Entry point for docs/architecture.
 
 ## Purpose
-- TODO: define scope and ownership.
+- Scope: architecture-level documentation for integration pipeline and target product layers.
+- Owner: repository maintainers (`@indianaPoly`).
 
 ## Contents
-- TODO: list key files and contracts.
+- `docs/WHITE_PAPER.md`: end-to-end layered architecture reference.
+- `README.md` (this file): architecture docs entrypoint.
