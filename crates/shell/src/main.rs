@@ -1,12 +1,12 @@
 use std::error::Error;
 use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
 use clap::ValueEnum;
-use common::PayloadFormat;
+use common::{DeadLetter, ExternalRecord, InterfaceRef, PayloadFormat, RecordMetadata};
 use drivers::{
     ApiKeyAuthConfig, ApiKeyLocation, BinaryFileDriver,
     CircuitBreakerConfig as DriverCircuitBreakerConfig,
@@ -42,6 +42,12 @@ struct Args {
     dlq_table: String,
     #[arg(long)]
     source: Option<String>,
+    #[arg(long)]
+    replay_dlq: Option<PathBuf>,
+    #[arg(long, value_enum, default_value_t = DlqSinkKind::File)]
+    replay_dlq_source: DlqSinkKind,
+    #[arg(long, default_value = "dead_letters")]
+    replay_dlq_table: String,
     #[arg(long, value_enum, default_value_t = InputFormat::Auto)]
     format: InputFormat,
     #[arg(long, default_value = "system/contracts/reference/allowlist.json")]
@@ -81,30 +87,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let metadata = metadata_from_interface(&interface);
-
-    let mut driver: Box<dyn ExternalSystem> = match driver_kind {
-        DriverKind::Jsonl => {
-            let input_source = resolve_input(&args.input, &interface)?;
-            Box::new(JsonlDriver::new(input_source, metadata))
-        }
-        DriverKind::Text => {
-            let input_source = resolve_input(&args.input, &interface)?;
-            Box::new(TextLineDriver::new(input_source, metadata))
-        }
-        DriverKind::Binary => {
-            let input_source = resolve_input(&args.input, &interface)?;
-            Box::new(BinaryFileDriver::new(input_source, metadata))
-        }
-        DriverKind::Rest => {
-            let config = rest_config_from_interface(&interface)?;
-            Box::new(RestDriver::new(config, metadata))
-        }
-        DriverKind::Db => {
-            let config = db_config_from_interface(&interface)?;
-            Box::new(DbDriver::new(config, metadata))
-        }
+    let records = if let Some(replay_dlq_path) = &args.replay_dlq {
+        load_replay_records(&args, replay_dlq_path)?
+    } else {
+        let mut driver = build_external_driver(&args, &interface, driver_kind, metadata)?;
+        driver.fetch()?
     };
-    let records = driver.fetch()?;
 
     let pipeline = IntegrationPipeline::new(interface);
     let outcome = pipeline.integrate(&source, records);
@@ -123,6 +111,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     Ok(())
+}
+
+fn build_external_driver(
+    args: &Args,
+    interface: &ExternalInterface,
+    driver_kind: DriverKind,
+    metadata: RecordMetadata,
+) -> Result<Box<dyn ExternalSystem>, Box<dyn Error>> {
+    let driver: Box<dyn ExternalSystem> = match driver_kind {
+        DriverKind::Jsonl => {
+            let input_source = resolve_input(&args.input, interface)?;
+            Box::new(JsonlDriver::new(input_source, metadata))
+        }
+        DriverKind::Text => {
+            let input_source = resolve_input(&args.input, interface)?;
+            Box::new(TextLineDriver::new(input_source, metadata))
+        }
+        DriverKind::Binary => {
+            let input_source = resolve_input(&args.input, interface)?;
+            Box::new(BinaryFileDriver::new(input_source, metadata))
+        }
+        DriverKind::Rest => {
+            let config = rest_config_from_interface(interface)?;
+            Box::new(RestDriver::new(config, metadata))
+        }
+        DriverKind::Db => {
+            let config = db_config_from_interface(interface)?;
+            Box::new(DbDriver::new(config, metadata))
+        }
+    };
+    Ok(driver)
 }
 
 trait DlqSink {
@@ -253,6 +272,113 @@ fn build_dlq_sink(args: &Args) -> Box<dyn DlqSink> {
             Box::new(SqliteDlqSink::new(path, args.dlq_table.clone()))
         }
     }
+}
+
+fn load_replay_records(args: &Args, path: &PathBuf) -> Result<Vec<ExternalRecord>, Box<dyn Error>> {
+    let dead_letters = match args.replay_dlq_source {
+        DlqSinkKind::File => load_dead_letters_from_file(path)?,
+        DlqSinkKind::Sqlite => load_dead_letters_from_sqlite(path, &args.replay_dlq_table)?,
+    };
+
+    Ok(dead_letters_to_external_records(dead_letters))
+}
+
+fn load_dead_letters_from_file(path: &PathBuf) -> Result<Vec<DeadLetter>, Box<dyn Error>> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut dead_letters = Vec::new();
+
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let dead_letter: DeadLetter = serde_json::from_str(&line)?;
+        dead_letters.push(dead_letter);
+    }
+
+    Ok(dead_letters)
+}
+
+fn load_dead_letters_from_sqlite(
+    path: &PathBuf,
+    table: &str,
+) -> Result<Vec<DeadLetter>, Box<dyn Error>> {
+    if !is_valid_sqlite_identifier(table) {
+        return Err(format!(
+            "invalid --replay-dlq-table value '{}': use [A-Za-z_][A-Za-z0-9_]*",
+            table
+        )
+        .into());
+    }
+
+    let connection = rusqlite::Connection::open(path)?;
+    let sql = format!(
+        "SELECT source, interface_name, interface_version, payload_json, metadata_json, errors_json
+         FROM {} ORDER BY id ASC",
+        table
+    );
+    let mut statement = connection.prepare(&sql)?;
+
+    let rows = statement.query_map([], |row| {
+        let source: String = row.get(0)?;
+        let interface_name: String = row.get(1)?;
+        let interface_version: String = row.get(2)?;
+        let payload_json: String = row.get(3)?;
+        let metadata_json: String = row.get(4)?;
+        let errors_json: String = row.get(5)?;
+
+        let payload = serde_json::from_str(&payload_json).map_err(|err| {
+            rusqlite::Error::FromSqlConversionFailure(
+                payload_json.len(),
+                rusqlite::types::Type::Text,
+                Box::new(err),
+            )
+        })?;
+        let metadata = serde_json::from_str(&metadata_json).map_err(|err| {
+            rusqlite::Error::FromSqlConversionFailure(
+                metadata_json.len(),
+                rusqlite::types::Type::Text,
+                Box::new(err),
+            )
+        })?;
+        let errors = serde_json::from_str(&errors_json).map_err(|err| {
+            rusqlite::Error::FromSqlConversionFailure(
+                errors_json.len(),
+                rusqlite::types::Type::Text,
+                Box::new(err),
+            )
+        })?;
+
+        Ok(DeadLetter {
+            source,
+            interface: InterfaceRef {
+                name: interface_name,
+                version: interface_version,
+            },
+            payload,
+            metadata,
+            errors,
+        })
+    })?;
+
+    let mut dead_letters = Vec::new();
+    for row in rows {
+        dead_letters.push(row?);
+    }
+
+    Ok(dead_letters)
+}
+
+fn dead_letters_to_external_records(dead_letters: Vec<DeadLetter>) -> Vec<ExternalRecord> {
+    dead_letters
+        .into_iter()
+        .map(|dead_letter| ExternalRecord {
+            payload: dead_letter.payload,
+            metadata: dead_letter.metadata,
+        })
+        .collect()
 }
 
 fn is_valid_sqlite_identifier(value: &str) -> bool {
@@ -462,8 +588,10 @@ fn db_config_from_interface(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_dlq_sink, is_valid_sqlite_identifier, with_suffix, Args, DlqSinkKind, InputFormat,
+        build_dlq_sink, dead_letters_to_external_records, is_valid_sqlite_identifier, with_suffix,
+        Args, DlqSinkKind, InputFormat,
     };
+    use common::{DeadLetter, InterfaceRef, Payload, RecordMetadata, ValidationMessage};
     use std::path::PathBuf;
 
     #[test]
@@ -491,6 +619,9 @@ mod tests {
             dlq_sink: DlqSinkKind::Sqlite,
             dlq_table: "dead_letters".to_string(),
             source: None,
+            replay_dlq: None,
+            replay_dlq_source: DlqSinkKind::File,
+            replay_dlq_table: "dead_letters".to_string(),
             format: InputFormat::Auto,
             contract_registry: PathBuf::from("/tmp/allowlist.json"),
         };
@@ -514,5 +645,32 @@ mod tests {
         assert!(!is_valid_sqlite_identifier("2dead_letters"));
         assert!(!is_valid_sqlite_identifier("dead-letters"));
         assert!(!is_valid_sqlite_identifier("dead letters"));
+    }
+
+    #[test]
+    fn dead_letter_conversion_preserves_payload_and_metadata() {
+        let dead_letters = vec![DeadLetter {
+            source: "mes".to_string(),
+            interface: InterfaceRef {
+                name: "mes".to_string(),
+                version: "v1".to_string(),
+            },
+            payload: Payload::from_text("hello".to_string()),
+            metadata: RecordMetadata {
+                content_type: Some("text/plain".to_string()),
+                filename: Some("in.txt".to_string()),
+                source_details: None,
+            },
+            errors: vec![ValidationMessage::new(
+                "TEST_ERROR",
+                Some("/x".to_string()),
+                "bad".to_string(),
+            )],
+        }];
+
+        let records = dead_letters_to_external_records(dead_letters);
+        assert_eq!(records.len(), 1);
+        assert!(matches!(&records[0].payload, Payload::Text(text) if text == "hello"));
+        assert_eq!(records[0].metadata.filename.as_deref(), Some("in.txt"));
     }
 }
