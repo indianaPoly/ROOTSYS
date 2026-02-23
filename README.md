@@ -145,6 +145,12 @@ The interface JSON drives the pipeline. Example:
         }
       },
       "timeout_ms": 5000,
+      "retry": {
+        "max_attempts": 3,
+        "base_delay_ms": 100,
+        "max_delay_ms": 2000,
+        "jitter_percent": 20
+      },
       "response_format": "json",
       "items_pointer": "/items"
     }
@@ -155,6 +161,7 @@ The interface JSON drives the pipeline. Example:
 - `items_pointer` is optional. If it points to a JSON array, one record is created per element.
 - If `response_format` is `unknown`, the driver tries JSON, then UTF-8 text, then falls back to binary.
 - Safe default request timeout is `5000ms` when `timeout_ms` is omitted.
+- Transient REST failures are retried with exponential backoff and jitter.
 - API key auth supports `in: "header"` and `in: "query"` injection modes.
 - OAuth2 client-credentials auth is supported via `auth.kind = "oauth2_client_credentials"` with
   `token_url`, `client_id`, `client_secret`, and optional `scope`.
@@ -169,7 +176,9 @@ The interface JSON drives the pipeline. Example:
   - `items_pointer` points to an array -> emit one record per item.
   - emission stops when a page emits zero records, or `max_pages` is reached.
 - Rate-limit policy notes:
-  - 429/status-based retry is not automatically applied in the driver yet.
+  - transient HTTP failures (`408`, `425`, `429`, `500`, `502`, `503`, `504`) and transport errors are retried.
+  - default retry policy: `max_attempts=3`, `base_delay_ms=100`, `max_delay_ms=2000`, `jitter_percent=20`.
+  - retry policy can be overridden with `rest.retry`.
   - Use conservative `page_size`, explicit `max_pages`, and endpoint-side quotas for safe operation.
 
 OAuth2 example:
