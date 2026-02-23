@@ -155,6 +155,35 @@ The interface JSON drives the pipeline. Example:
 - `items_pointer` is optional. If it points to a JSON array, one record is created per element.
 - If `response_format` is `unknown`, the driver tries JSON, then UTF-8 text, then falls back to binary.
 - API key auth supports `in: "header"` and `in: "query"` injection modes.
+- OAuth2 client-credentials auth is supported via `auth.kind = "oauth2_client_credentials"` with
+  `token_url`, `client_id`, `client_secret`, and optional `scope`.
+- OAuth2 access tokens are cached in-memory and refreshed before expiry.
+
+OAuth2 example:
+```json
+{
+  "name": "external-api",
+  "version": "v1",
+  "driver": {
+    "kind": "rest",
+    "rest": {
+      "url": "https://api.example.com/events",
+      "method": "GET",
+      "auth": {
+        "kind": "oauth2_client_credentials",
+        "oauth2_client_credentials": {
+          "token_url": "https://auth.example.com/oauth/token",
+          "client_id": "client-id",
+          "client_secret": "client-secret",
+          "scope": "events:read"
+        }
+      },
+      "response_format": "json"
+    }
+  },
+  "payload_format": "json"
+}
+```
 
 ### Driver: DB (sqlite)
 ```json
