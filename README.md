@@ -100,6 +100,26 @@ cargo run -p fabric -- \
   --dedupe true
 ```
 
+### DLQ sink options
+- File sink (default):
+  - `--dlq-sink file`
+  - `--dlq /path/to/output.dlq.jsonl` (optional, default is derived from `--output`)
+- SQLite sink:
+  - `--dlq-sink sqlite`
+  - `--dlq /path/to/dlq.sqlite` (optional, default is derived from `--output`)
+  - `--dlq-table dead_letters` (optional)
+
+Example (SQLite DLQ sink):
+```bash
+cargo run -p shell -- \
+  --interface path/to/interface.json \
+  --contract-registry system/contracts/reference/allowlist.json \
+  --output /tmp/output.jsonl \
+  --dlq-sink sqlite \
+  --dlq /tmp/dlq.sqlite \
+  --dlq-table dead_letters
+```
+
 ## Interface Definition (External System)
 The interface JSON drives the pipeline. Example:
 ```json
@@ -382,9 +402,8 @@ Page/page_size pagination example:
 - Operational strategy reference: `docs/runbooks/idempotency_dedupe_strategy.md`.
 
 ## Next Steps (Planned)
-1. Persist DLQ to external storage (S3, DB, queue).
-2. Add schema registry or contract versioning enforcement.
-3. Add streaming drivers (Kafka, CDC) and scheduler integration.
+1. Add schema registry or contract versioning enforcement.
+2. Add streaming drivers (Kafka, CDC) and scheduler integration.
 
 ## Verification
 Build/test is currently **NOT VERIFIED** in this environment due to restricted network access for crates.io.
