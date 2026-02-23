@@ -271,5 +271,7 @@ fn db_config_from_interface(
             RuntimePostgresTlsMode::Disable => DriverPostgresTlsMode::Disable,
             RuntimePostgresTlsMode::Require => DriverPostgresTlsMode::Require,
         }),
+        pool_min_connections: db.pool.as_ref().and_then(|pool| pool.min_connections),
+        pool_max_connections: db.pool.as_ref().and_then(|pool| pool.max_connections),
     })
 }

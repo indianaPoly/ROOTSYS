@@ -6,7 +6,11 @@
     "db": {
       "kind": "mysql",
       "connection": "mysql://app:secret@localhost:3306/ops",
-      "query": "SELECT * FROM defect_events"
+      "query": "SELECT * FROM defect_events",
+      "pool": {
+        "min_connections": 1,
+        "max_connections": 10
+      }
     }
   },
   "payload_format": "json"

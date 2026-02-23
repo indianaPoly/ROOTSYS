@@ -343,6 +343,17 @@ pub struct DbDriverConfig {
     pub query: String,
     #[serde(default)]
     pub postgres_tls_mode: Option<PostgresTlsMode>,
+    #[serde(default)]
+    pub pool: Option<DbPoolConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DbPoolConfig {
+    #[serde(default)]
+    pub min_connections: Option<u32>,
+    #[serde(default)]
+    pub max_connections: Option<u32>,
 }
 
 /// Supported database kinds for DB drivers.
@@ -761,6 +772,51 @@ impl ExternalInterface {
                             message: "postgres_tls_mode is only valid when db.kind is 'postgres'"
                                 .to_string(),
                         });
+                    }
+
+                    if let Some(pool) = &db.pool {
+                        if db.kind == DbKind::Sqlite {
+                            errors.push(ValidationError {
+                                code: "DB_POOL_UNSUPPORTED_FOR_SQLITE".to_string(),
+                                path: "/driver/db/pool".to_string(),
+                                message: "connection pool config is not supported for sqlite"
+                                    .to_string(),
+                            });
+                        }
+
+                        if let Some(min) = pool.min_connections {
+                            if min == 0 {
+                                errors.push(ValidationError {
+                                    code: "DB_POOL_MIN_CONNECTIONS_INVALID".to_string(),
+                                    path: "/driver/db/pool/min_connections".to_string(),
+                                    message: "min_connections must be > 0 when provided"
+                                        .to_string(),
+                                });
+                            }
+                        }
+
+                        if let Some(max) = pool.max_connections {
+                            if max == 0 {
+                                errors.push(ValidationError {
+                                    code: "DB_POOL_MAX_CONNECTIONS_INVALID".to_string(),
+                                    path: "/driver/db/pool/max_connections".to_string(),
+                                    message: "max_connections must be > 0 when provided"
+                                        .to_string(),
+                                });
+                            }
+                        }
+
+                        if let (Some(min), Some(max)) = (pool.min_connections, pool.max_connections)
+                        {
+                            if min > max {
+                                errors.push(ValidationError {
+                                    code: "DB_POOL_MIN_GT_MAX".to_string(),
+                                    path: "/driver/db/pool".to_string(),
+                                    message: "min_connections must be <= max_connections"
+                                        .to_string(),
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -1527,6 +1583,79 @@ mod tests {
 
         let interface: ExternalInterface = serde_json::from_str(json).unwrap();
         interface.validate().unwrap();
+    }
+
+    #[test]
+    fn errors_when_db_pool_config_invalid() {
+        let json = r#"{
+            "name": "db-sample",
+            "version": "v1",
+            "driver": {
+                "kind": "db",
+                "db": {
+                    "kind": "postgres",
+                    "connection": "host=localhost user=app password=secret dbname=ops",
+                    "query": "select 1",
+                    "pool": {
+                        "min_connections": 0,
+                        "max_connections": 0
+                    }
+                }
+            }
+        }"#;
+
+        let interface: ExternalInterface = serde_json::from_str(json).unwrap();
+        let errors = interface.validate().unwrap_err();
+        assert!(has_code(&errors, "DB_POOL_MIN_CONNECTIONS_INVALID"));
+        assert!(has_code(&errors, "DB_POOL_MAX_CONNECTIONS_INVALID"));
+    }
+
+    #[test]
+    fn errors_when_db_pool_min_exceeds_max() {
+        let json = r#"{
+            "name": "db-sample",
+            "version": "v1",
+            "driver": {
+                "kind": "db",
+                "db": {
+                    "kind": "postgres",
+                    "connection": "host=localhost user=app password=secret dbname=ops",
+                    "query": "select 1",
+                    "pool": {
+                        "min_connections": 10,
+                        "max_connections": 5
+                    }
+                }
+            }
+        }"#;
+
+        let interface: ExternalInterface = serde_json::from_str(json).unwrap();
+        let errors = interface.validate().unwrap_err();
+        assert!(has_code(&errors, "DB_POOL_MIN_GT_MAX"));
+    }
+
+    #[test]
+    fn errors_when_db_pool_used_for_sqlite() {
+        let json = r#"{
+            "name": "db-sample",
+            "version": "v1",
+            "driver": {
+                "kind": "db",
+                "db": {
+                    "kind": "sqlite",
+                    "connection": "./sample.db",
+                    "query": "select 1",
+                    "pool": {
+                        "min_connections": 1,
+                        "max_connections": 5
+                    }
+                }
+            }
+        }"#;
+
+        let interface: ExternalInterface = serde_json::from_str(json).unwrap();
+        let errors = interface.validate().unwrap_err();
+        assert!(has_code(&errors, "DB_POOL_UNSUPPORTED_FOR_SQLITE"));
     }
 
     #[test]

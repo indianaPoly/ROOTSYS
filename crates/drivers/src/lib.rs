@@ -12,6 +12,8 @@ use thiserror::Error;
 
 const DEFAULT_REST_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_REST_MAX_PAGES: u32 = 100;
+const DEFAULT_DB_POOL_MIN_CONNECTIONS: u32 = 1;
+const DEFAULT_DB_POOL_MAX_CONNECTIONS: u32 = 10;
 
 /// Errors returned while fetching data from external systems.
 #[derive(Debug, Error)]
@@ -655,12 +657,24 @@ pub struct DbConfig {
     pub connection: String,
     pub query: String,
     pub postgres_tls_mode: Option<PostgresTlsMode>,
+    pub pool_min_connections: Option<u32>,
+    pub pool_max_connections: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PostgresTlsMode {
     Disable,
     Require,
+}
+
+fn resolved_pool_bounds(config: &DbConfig) -> (u32, u32) {
+    let min = config
+        .pool_min_connections
+        .unwrap_or(DEFAULT_DB_POOL_MIN_CONNECTIONS);
+    let max = config
+        .pool_max_connections
+        .unwrap_or(DEFAULT_DB_POOL_MAX_CONNECTIONS);
+    (min, std::cmp::max(max, min))
 }
 
 /// DB driver that fetches records via SQL queries.
@@ -725,8 +739,29 @@ fn fetch_postgres(
     config: &DbConfig,
     metadata: &RecordMetadata,
 ) -> Result<Vec<ExternalRecord>, DriverError> {
-    let mut client = match config.postgres_tls_mode.unwrap_or(PostgresTlsMode::Disable) {
-        PostgresTlsMode::Disable => postgres::Client::connect(&config.connection, postgres::NoTls)?,
+    let pg_config = config
+        .connection
+        .parse::<postgres::Config>()
+        .map_err(|err| DriverError::InvalidResponse(format!("invalid postgres config: {err}")))?;
+    let (min, max) = resolved_pool_bounds(config);
+
+    let rows = match config.postgres_tls_mode.unwrap_or(PostgresTlsMode::Disable) {
+        PostgresTlsMode::Disable => {
+            let manager = r2d2_postgres::PostgresConnectionManager::new(pg_config, postgres::NoTls);
+            let pool = r2d2::Pool::builder()
+                .min_idle(Some(min))
+                .max_size(max)
+                .build(manager)
+                .map_err(|err| {
+                    DriverError::InvalidResponse(format!("failed to build postgres pool: {err}"))
+                })?;
+            let mut client = pool.get().map_err(|err| {
+                DriverError::InvalidResponse(format!(
+                    "failed to get postgres pooled connection: {err}"
+                ))
+            })?;
+            client.query(&config.query, &[])?
+        }
         PostgresTlsMode::Require => {
             let tls = native_tls::TlsConnector::builder().build().map_err(|err| {
                 DriverError::InvalidResponse(format!(
@@ -734,10 +769,22 @@ fn fetch_postgres(
                 ))
             })?;
             let connector = postgres_native_tls::MakeTlsConnector::new(tls);
-            postgres::Client::connect(&config.connection, connector)?
+            let manager = r2d2_postgres::PostgresConnectionManager::new(pg_config, connector);
+            let pool = r2d2::Pool::builder()
+                .min_idle(Some(min))
+                .max_size(max)
+                .build(manager)
+                .map_err(|err| {
+                    DriverError::InvalidResponse(format!("failed to build postgres pool: {err}"))
+                })?;
+            let mut client = pool.get().map_err(|err| {
+                DriverError::InvalidResponse(format!(
+                    "failed to get postgres pooled connection: {err}"
+                ))
+            })?;
+            client.query(&config.query, &[])?
         }
     };
-    let rows = client.query(&config.query, &[])?;
 
     let metadata = metadata_with_content_type(metadata.clone(), None, "application/json", None);
 
@@ -763,7 +810,18 @@ fn fetch_mysql(
     config: &DbConfig,
     metadata: &RecordMetadata,
 ) -> Result<Vec<ExternalRecord>, DriverError> {
-    let pool = mysql::Pool::new(config.connection.as_str())?;
+    let (min, max) = resolved_pool_bounds(config);
+    let base_opts = mysql::Opts::from_url(&config.connection).map_err(|err| {
+        DriverError::InvalidResponse(format!("invalid mysql connection url: {err}"))
+    })?;
+    let constraints = mysql::PoolConstraints::new(min as usize, max as usize).ok_or_else(|| {
+        DriverError::InvalidResponse("invalid mysql pool constraints".to_string())
+    })?;
+    let pool_opts = mysql::PoolOpts::new().with_constraints(constraints);
+    let opts: mysql::Opts = mysql::OptsBuilder::from_opts(base_opts)
+        .pool_opts(pool_opts)
+        .into();
+    let pool = mysql::Pool::new(opts)?;
     let mut conn = pool.get_conn()?;
     let result = conn.query_iter(&config.query)?;
     let columns: Vec<String> = result
