@@ -151,6 +151,10 @@ The interface JSON drives the pipeline. Example:
         "max_delay_ms": 2000,
         "jitter_percent": 20
       },
+      "circuit_breaker": {
+        "failure_threshold": 5,
+        "open_timeout_ms": 30000
+      },
       "response_format": "json",
       "items_pointer": "/items"
     }
@@ -179,6 +183,10 @@ The interface JSON drives the pipeline. Example:
   - transient HTTP failures (`408`, `425`, `429`, `500`, `502`, `503`, `504`) and transport errors are retried.
   - default retry policy: `max_attempts=3`, `base_delay_ms=100`, `max_delay_ms=2000`, `jitter_percent=20`.
   - retry policy can be overridden with `rest.retry`.
+- Circuit breaker policy is optional for REST and supports:
+  - `failure_threshold` (default `5`)
+  - `open_timeout_ms` (default `30000`)
+  - state transitions: `closed -> open -> half_open -> closed`
   - Use conservative `page_size`, explicit `max_pages`, and endpoint-side quotas for safe operation.
 
 OAuth2 example:
@@ -302,6 +310,10 @@ Page/page_size pagination example:
         "base_delay_ms": 100,
         "max_delay_ms": 2000,
         "jitter_percent": 20
+      },
+      "circuit_breaker": {
+        "failure_threshold": 5,
+        "open_timeout_ms": 30000
       }
     }
   },
@@ -327,6 +339,10 @@ Page/page_size pagination example:
         "base_delay_ms": 100,
         "max_delay_ms": 2000,
         "jitter_percent": 20
+      },
+      "circuit_breaker": {
+        "failure_threshold": 5,
+        "open_timeout_ms": 30000
       }
     }
   },
@@ -344,6 +360,10 @@ Page/page_size pagination example:
   - `base_delay_ms` (default `100`)
   - `max_delay_ms` (default `2000`)
   - `jitter_percent` (default `20`, range `0..=100`)
+- Circuit breaker policy is optional for all DB kinds and supports:
+  - `failure_threshold` (default `5`)
+  - `open_timeout_ms` (default `30000`)
+  - state transitions: `closed -> open -> half_open -> closed`
 
 ## Output Records
 - `IntegrationRecord` retains the raw payload plus metadata and pipeline annotations.
@@ -362,10 +382,9 @@ Page/page_size pagination example:
 
 ## Next Steps (Planned)
 1. Add REST auth helpers (OAuth, API keys) and pagination.
-2. Add circuit breaker policies for REST/DB drivers.
-3. Persist DLQ to external storage (S3, DB, queue).
-4. Add schema registry or contract versioning enforcement.
-5. Add streaming drivers (Kafka, CDC) and scheduler integration.
+2. Persist DLQ to external storage (S3, DB, queue).
+3. Add schema registry or contract versioning enforcement.
+4. Add streaming drivers (Kafka, CDC) and scheduler integration.
 
 ## Verification
 Build/test is currently **NOT VERIFIED** in this environment due to restricted network access for crates.io.
