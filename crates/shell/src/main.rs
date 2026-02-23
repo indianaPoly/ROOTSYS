@@ -1,3 +1,4 @@
+use std::error::Error;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
@@ -100,8 +101,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     write_jsonl(&args.output, &outcome.records)?;
 
     if !outcome.dead_letters.is_empty() {
-        let dlq_path = args.dlq.unwrap_or_else(|| with_suffix(&args.output, "dlq"));
-        write_jsonl(&dlq_path, &outcome.dead_letters)?;
+        let dlq_sink = build_dlq_sink(&args);
+        dlq_sink.write(&outcome.dead_letters)?;
     }
 
     println!(
@@ -111,6 +112,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     Ok(())
+}
+
+trait DlqSink {
+    fn write(&self, rows: &[common::DeadLetter]) -> Result<(), Box<dyn Error>>;
+}
+
+struct FileDlqSink {
+    path: PathBuf,
+}
+
+impl FileDlqSink {
+    fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+impl DlqSink for FileDlqSink {
+    fn write(&self, rows: &[common::DeadLetter]) -> Result<(), Box<dyn Error>> {
+        write_jsonl(&self.path, rows)?;
+        Ok(())
+    }
+}
+
+fn build_dlq_sink(args: &Args) -> Box<dyn DlqSink> {
+    let path = args
+        .dlq
+        .clone()
+        .unwrap_or_else(|| with_suffix(&args.output, "dlq"));
+    Box::new(FileDlqSink::new(path))
 }
 
 /// Write JSONL output to disk.
@@ -302,4 +332,25 @@ fn db_config_from_interface(
             }
         }),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::with_suffix;
+    use std::path::PathBuf;
+
+    #[test]
+    fn with_suffix_appends_before_extension() {
+        let path = PathBuf::from("/tmp/output.jsonl");
+        assert_eq!(
+            with_suffix(&path, "dlq"),
+            PathBuf::from("/tmp/output.dlq.jsonl")
+        );
+    }
+
+    #[test]
+    fn with_suffix_handles_extensionless_path() {
+        let path = PathBuf::from("/tmp/output");
+        assert_eq!(with_suffix(&path, "dlq"), PathBuf::from("/tmp/output.dlq"));
+    }
 }
