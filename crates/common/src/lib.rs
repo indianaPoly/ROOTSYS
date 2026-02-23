@@ -73,6 +73,23 @@ pub struct RecordMetadata {
     pub filename: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ValidationMessage {
+    pub code: String,
+    pub path: Option<String>,
+    pub message: String,
+}
+
+impl ValidationMessage {
+    pub fn new(code: &str, path: Option<String>, message: String) -> Self {
+        Self {
+            code: code.to_string(),
+            path,
+            message,
+        }
+    }
+}
+
 /// Raw external record fetched from an external system.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExternalRecord {
@@ -91,7 +108,7 @@ pub struct IntegrationRecord {
     pub payload: Payload,
     #[serde(default)]
     pub metadata: RecordMetadata,
-    pub warnings: Vec<String>,
+    pub warnings: Vec<ValidationMessage>,
 }
 
 /// Record rejected by the pipeline with the associated errors.
@@ -102,5 +119,5 @@ pub struct DeadLetter {
     pub payload: Payload,
     #[serde(default)]
     pub metadata: RecordMetadata,
-    pub errors: Vec<String>,
+    pub errors: Vec<ValidationMessage>,
 }

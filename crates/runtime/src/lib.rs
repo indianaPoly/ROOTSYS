@@ -2,7 +2,10 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use common::{DeadLetter, ExternalRecord, IntegrationRecord, InterfaceRef, Payload, PayloadFormat};
+use common::{
+    DeadLetter, ExternalRecord, IntegrationRecord, InterfaceRef, Payload, PayloadFormat,
+    ValidationMessage,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -25,6 +28,7 @@ pub enum InterfaceError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidationError {
+    pub code: String,
     pub path: String,
     pub message: String,
 }
@@ -50,6 +54,7 @@ impl std::error::Error for ValidationErrors {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContractRegistryValidationError {
+    pub code: String,
     pub path: String,
     pub message: String,
 }
@@ -100,6 +105,7 @@ impl ContractRegistry {
 
         if self.allowlist.is_empty() {
             errors.push(ContractRegistryValidationError {
+                code: "CONTRACT_REGISTRY_EMPTY_ALLOWLIST".to_string(),
                 path: "/allowlist".to_string(),
                 message: "must contain at least one (name, version) pair".to_string(),
             });
@@ -109,6 +115,7 @@ impl ContractRegistry {
         for (idx, entry) in self.allowlist.iter().enumerate() {
             if entry.name.trim().is_empty() {
                 errors.push(ContractRegistryValidationError {
+                    code: "CONTRACT_REGISTRY_EMPTY_NAME".to_string(),
                     path: format!("/allowlist/{idx}/name"),
                     message: "must be a non-empty string".to_string(),
                 });
@@ -116,6 +123,7 @@ impl ContractRegistry {
 
             if entry.version.trim().is_empty() {
                 errors.push(ContractRegistryValidationError {
+                    code: "CONTRACT_REGISTRY_EMPTY_VERSION".to_string(),
                     path: format!("/allowlist/{idx}/version"),
                     message: "must be a non-empty string".to_string(),
                 });
@@ -124,6 +132,7 @@ impl ContractRegistry {
             let key = (entry.name.clone(), entry.version.clone());
             if !seen.insert(key) {
                 errors.push(ContractRegistryValidationError {
+                    code: "CONTRACT_REGISTRY_DUPLICATE_ENTRY".to_string(),
                     path: format!("/allowlist/{idx}"),
                     message: "duplicate (name, version) entry".to_string(),
                 });
@@ -266,6 +275,7 @@ impl ExternalInterface {
 
         if self.name.trim().is_empty() {
             errors.push(ValidationError {
+                code: "INTERFACE_NAME_EMPTY".to_string(),
                 path: "/name".to_string(),
                 message: "must be a non-empty string".to_string(),
             });
@@ -273,6 +283,7 @@ impl ExternalInterface {
 
         if self.version.trim().is_empty() {
             errors.push(ValidationError {
+                code: "INTERFACE_VERSION_EMPTY".to_string(),
                 path: "/version".to_string(),
                 message: "must be a non-empty string".to_string(),
             });
@@ -286,6 +297,7 @@ impl ExternalInterface {
 
         if self.record_id_policy == RecordIdPolicy::Strict && self.record_id_paths.is_empty() {
             errors.push(ValidationError {
+                code: "RECORD_ID_POLICY_STRICT_REQUIRES_PATHS".to_string(),
                 path: "/record_id_paths".to_string(),
                 message: "must contain at least one pointer when record_id_policy is 'strict'"
                     .to_string(),
@@ -296,6 +308,7 @@ impl ExternalInterface {
             DriverKind::Rest => {
                 if self.driver.rest.is_none() {
                     errors.push(ValidationError {
+                        code: "REST_CONFIG_REQUIRED".to_string(),
                         path: "/driver/rest".to_string(),
                         message: "rest config is required when driver.kind is 'rest'".to_string(),
                     });
@@ -303,6 +316,7 @@ impl ExternalInterface {
 
                 if self.driver.db.is_some() {
                     errors.push(ValidationError {
+                        code: "REST_DB_CONFLICT".to_string(),
                         path: "/driver/db".to_string(),
                         message: "db config must be omitted when driver.kind is 'rest'".to_string(),
                     });
@@ -310,6 +324,7 @@ impl ExternalInterface {
 
                 if self.driver.input.is_some() {
                     errors.push(ValidationError {
+                        code: "REST_INPUT_CONFLICT".to_string(),
                         path: "/driver/input".to_string(),
                         message: "input must be omitted when driver.kind is 'rest'".to_string(),
                     });
@@ -318,6 +333,7 @@ impl ExternalInterface {
                 if let Some(rest) = &self.driver.rest {
                     if rest.url.trim().is_empty() {
                         errors.push(ValidationError {
+                            code: "REST_URL_EMPTY".to_string(),
                             path: "/driver/rest/url".to_string(),
                             message: "url is required for rest driver".to_string(),
                         });
@@ -326,6 +342,7 @@ impl ExternalInterface {
                     if let Some(method) = &rest.method {
                         if method.trim().is_empty() {
                             errors.push(ValidationError {
+                                code: "REST_METHOD_EMPTY".to_string(),
                                 path: "/driver/rest/method".to_string(),
                                 message: "method must be a non-empty string when provided"
                                     .to_string(),
@@ -336,6 +353,7 @@ impl ExternalInterface {
                     if let Some(timeout_ms) = rest.timeout_ms {
                         if timeout_ms == 0 {
                             errors.push(ValidationError {
+                                code: "REST_TIMEOUT_INVALID".to_string(),
                                 path: "/driver/rest/timeout_ms".to_string(),
                                 message: "timeout_ms must be > 0 when provided".to_string(),
                             });
@@ -345,6 +363,7 @@ impl ExternalInterface {
                     if let Some(items_pointer) = &rest.items_pointer {
                         if let Err(message) = validate_json_pointer(items_pointer) {
                             errors.push(ValidationError {
+                                code: "REST_ITEMS_POINTER_INVALID".to_string(),
                                 path: "/driver/rest/items_pointer".to_string(),
                                 message: message.to_string(),
                             });
@@ -355,6 +374,7 @@ impl ExternalInterface {
             DriverKind::Db => {
                 if self.driver.db.is_none() {
                     errors.push(ValidationError {
+                        code: "DB_CONFIG_REQUIRED".to_string(),
                         path: "/driver/db".to_string(),
                         message: "db config is required when driver.kind is 'db'".to_string(),
                     });
@@ -362,6 +382,7 @@ impl ExternalInterface {
 
                 if self.driver.rest.is_some() {
                     errors.push(ValidationError {
+                        code: "DB_REST_CONFLICT".to_string(),
                         path: "/driver/rest".to_string(),
                         message: "rest config must be omitted when driver.kind is 'db'".to_string(),
                     });
@@ -369,6 +390,7 @@ impl ExternalInterface {
 
                 if self.driver.input.is_some() {
                     errors.push(ValidationError {
+                        code: "DB_INPUT_CONFLICT".to_string(),
                         path: "/driver/input".to_string(),
                         message: "input must be omitted when driver.kind is 'db'".to_string(),
                     });
@@ -377,6 +399,7 @@ impl ExternalInterface {
                 if let Some(db) = &self.driver.db {
                     if db.connection.trim().is_empty() {
                         errors.push(ValidationError {
+                            code: "DB_CONNECTION_EMPTY".to_string(),
                             path: "/driver/db/connection".to_string(),
                             message: "connection is required for db driver".to_string(),
                         });
@@ -384,6 +407,7 @@ impl ExternalInterface {
 
                     if db.query.trim().is_empty() {
                         errors.push(ValidationError {
+                            code: "DB_QUERY_EMPTY".to_string(),
                             path: "/driver/db/query".to_string(),
                             message: "query is required for db driver".to_string(),
                         });
@@ -393,6 +417,7 @@ impl ExternalInterface {
             _ => {
                 if self.driver.rest.is_some() {
                     errors.push(ValidationError {
+                        code: "DRIVER_REST_UNEXPECTED".to_string(),
                         path: "/driver/rest".to_string(),
                         message: "rest config must be omitted when driver.kind is not 'rest'"
                             .to_string(),
@@ -401,6 +426,7 @@ impl ExternalInterface {
 
                 if self.driver.db.is_some() {
                     errors.push(ValidationError {
+                        code: "DRIVER_DB_UNEXPECTED".to_string(),
                         path: "/driver/db".to_string(),
                         message: "db config must be omitted when driver.kind is not 'db'"
                             .to_string(),
@@ -432,6 +458,7 @@ impl ExternalInterface {
             Ok(())
         } else {
             Err(ValidationErrors(vec![ValidationError {
+                code: "CONTRACT_NOT_ALLOWLISTED".to_string(),
                 path: "/name".to_string(),
                 message: format!(
                     "interface '{}:{}' is not allowlisted in contract registry",
@@ -446,6 +473,7 @@ fn validate_pointer_list(errors: &mut Vec<ValidationError>, base_path: &str, poi
     for (idx, pointer) in pointers.iter().enumerate() {
         if let Err(message) = validate_json_pointer(pointer) {
             errors.push(ValidationError {
+                code: "JSON_POINTER_INVALID".to_string(),
                 path: format!("{}/{}", base_path, idx),
                 message: message.to_string(),
             });
@@ -458,6 +486,7 @@ fn validate_unique_list(errors: &mut Vec<ValidationError>, base_path: &str, valu
     for (idx, value) in values.iter().enumerate() {
         if !seen.insert(value) {
             errors.push(ValidationError {
+                code: "DUPLICATE_ENTRY".to_string(),
                 path: format!("{}/{}", base_path, idx),
                 message: "duplicate entry".to_string(),
             });
@@ -562,15 +591,22 @@ impl IntegrationPipeline {
     }
 
     /// Validate payload and emit warnings without mutating the payload.
-    fn validate_and_warn(&self, payload: &Payload) -> (Vec<String>, Vec<String>) {
+    fn validate_and_warn(
+        &self,
+        payload: &Payload,
+    ) -> (Vec<ValidationMessage>, Vec<ValidationMessage>) {
         let mut errors = Vec::new();
         let mut warnings = Vec::new();
 
         let payload_kind = payload_kind(payload);
         if !self.matches_payload_format(payload_kind) {
-            errors.push(format!(
-                "payload format mismatch: expected {:?}, got {:?}",
-                self.interface.payload_format, payload_kind
+            errors.push(ValidationMessage::new(
+                "PAYLOAD_FORMAT_MISMATCH",
+                Some("/payload".to_string()),
+                format!(
+                    "payload format mismatch: expected {:?}, got {:?}",
+                    self.interface.payload_format, payload_kind
+                ),
             ));
             return (errors, warnings);
         }
@@ -578,26 +614,38 @@ impl IntegrationPipeline {
         if let Payload::Json(value) = payload {
             for pointer in &self.interface.required_paths {
                 if !pointer_exists(value, pointer) {
-                    errors.push(format!("missing required path {pointer}"));
+                    errors.push(ValidationMessage::new(
+                        "MISSING_REQUIRED_PATH",
+                        Some(pointer.clone()),
+                        format!("missing required path {pointer}"),
+                    ));
                 }
             }
 
             for pointer in &self.interface.record_id_paths {
                 if !pointer_exists(value, pointer) {
-                    warnings.push(format!("missing record id path {pointer}"));
+                    warnings.push(ValidationMessage::new(
+                        "MISSING_RECORD_ID_PATH",
+                        Some(pointer.clone()),
+                        format!("missing record id path {pointer}"),
+                    ));
                 }
             }
         } else if !self.interface.required_paths.is_empty()
             || !self.interface.record_id_paths.is_empty()
         {
-            warnings.push("interface paths ignored for non-json payload".to_string());
+            warnings.push(ValidationMessage::new(
+                "PATHS_IGNORED_FOR_NON_JSON",
+                None,
+                "interface paths ignored for non-json payload".to_string(),
+            ));
         }
 
         (errors, warnings)
     }
 
     /// Build an idempotent record id using the interface key rules.
-    fn build_record_id(&self, payload: &Payload) -> Result<String, String> {
+    fn build_record_id(&self, payload: &Payload) -> Result<String, ValidationMessage> {
         if let Payload::Json(value) = payload {
             let mut parts = Vec::new();
             let mut missing = Vec::new();
@@ -613,16 +661,22 @@ impl IntegrationPipeline {
             }
 
             if self.interface.record_id_policy == RecordIdPolicy::Strict {
-                return Err(format!(
-                    "record_id strict policy violation: failed to resolve record id from paths: {}",
-                    missing.join(", ")
+                return Err(ValidationMessage::new(
+                    "RECORD_ID_STRICT_PATHS_UNRESOLVED",
+                    Some("/record_id_paths".to_string()),
+                    format!(
+                        "record_id strict policy violation: failed to resolve record id from paths: {}",
+                        missing.join(", ")
+                    ),
                 ));
             }
         } else if self.interface.record_id_policy == RecordIdPolicy::Strict {
-            return Err(
+            return Err(ValidationMessage::new(
+                "RECORD_ID_STRICT_NON_JSON",
+                Some("/record_id_paths".to_string()),
                 "record_id strict policy violation: strict mode requires JSON payload with resolvable record_id_paths"
                     .to_string(),
-            );
+            ));
         }
 
         Ok(hash_payload(payload))
@@ -689,6 +743,10 @@ mod tests {
 
     fn has_path(errors: &ValidationErrors, path: &str) -> bool {
         errors.0.iter().any(|error| error.path == path)
+    }
+
+    fn has_code(errors: &ValidationErrors, code: &str) -> bool {
+        errors.0.iter().any(|error| error.code == code)
     }
 
     #[test]
@@ -808,6 +866,7 @@ mod tests {
         let interface: ExternalInterface = serde_json::from_str(json).unwrap();
         let errors = interface.validate().unwrap_err();
         assert!(has_path(&errors, "/record_id_paths"));
+        assert!(has_code(&errors, "RECORD_ID_POLICY_STRICT_REQUIRES_PATHS"));
     }
 
     #[test]
@@ -832,7 +891,13 @@ mod tests {
         let output = pipeline.integrate("mes", vec![input]);
         assert_eq!(output.records.len(), 0);
         assert_eq!(output.dead_letters.len(), 1);
-        assert!(output.dead_letters[0].errors[0].contains("strict policy violation"));
+        assert_eq!(
+            output.dead_letters[0].errors[0].code,
+            "RECORD_ID_STRICT_PATHS_UNRESOLVED"
+        );
+        assert!(output.dead_letters[0].errors[0]
+            .message
+            .contains("strict policy violation"));
     }
 
     #[test]
@@ -880,6 +945,7 @@ mod tests {
 
         let err = interface.validate_against_registry(&registry).unwrap_err();
         assert!(has_path(&err, "/name"));
+        assert!(has_code(&err, "CONTRACT_NOT_ALLOWLISTED"));
     }
 
     #[test]
