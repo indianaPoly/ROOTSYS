@@ -6,7 +6,8 @@
     "db": {
       "kind": "postgres",
       "connection": "host=localhost user=app password=secret dbname=ops",
-      "query": "SELECT * FROM defect_events"
+      "query": "SELECT * FROM defect_events",
+      "postgres_tls_mode": "require"
     }
   },
   "payload_format": "json"

@@ -654,6 +654,13 @@ pub struct DbConfig {
     pub kind: DbKind,
     pub connection: String,
     pub query: String,
+    pub postgres_tls_mode: Option<PostgresTlsMode>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostgresTlsMode {
+    Disable,
+    Require,
 }
 
 /// DB driver that fetches records via SQL queries.
@@ -718,7 +725,18 @@ fn fetch_postgres(
     config: &DbConfig,
     metadata: &RecordMetadata,
 ) -> Result<Vec<ExternalRecord>, DriverError> {
-    let mut client = postgres::Client::connect(&config.connection, postgres::NoTls)?;
+    let mut client = match config.postgres_tls_mode.unwrap_or(PostgresTlsMode::Disable) {
+        PostgresTlsMode::Disable => postgres::Client::connect(&config.connection, postgres::NoTls)?,
+        PostgresTlsMode::Require => {
+            let tls = native_tls::TlsConnector::builder().build().map_err(|err| {
+                DriverError::InvalidResponse(format!(
+                    "failed to initialize postgres tls connector: {err}"
+                ))
+            })?;
+            let connector = postgres_native_tls::MakeTlsConnector::new(tls);
+            postgres::Client::connect(&config.connection, connector)?
+        }
+    };
     let rows = client.query(&config.query, &[])?;
 
     let metadata = metadata_with_content_type(metadata.clone(), None, "application/json", None);

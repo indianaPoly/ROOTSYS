@@ -9,14 +9,14 @@ use drivers::{
     ApiKeyAuthConfig, ApiKeyLocation, BinaryFileDriver,
     CursorPaginationConfig as DriverCursorPaginationConfig, DbConfig, DbDriver, DbKind,
     ExternalSystem, InputSource, JsonlDriver, OAuth2ClientCredentialsAuthConfig,
-    PagePaginationConfig as DriverPagePaginationConfig, RestConfig, RestDriver,
-    RestPaginationConfig as DriverRestPaginationConfig,
+    PagePaginationConfig as DriverPagePaginationConfig, PostgresTlsMode as DriverPostgresTlsMode,
+    RestConfig, RestDriver, RestPaginationConfig as DriverRestPaginationConfig,
     RestPaginationKind as DriverRestPaginationKind, TextLineDriver,
 };
 use runtime::{
     ApiKeyLocation as RuntimeApiKeyLocation, ContractRegistry, DbKind as RuntimeDbKind, DriverKind,
-    ExternalInterface, IntegrationPipeline, RestAuthKind,
-    RestPaginationKind as RuntimeRestPaginationKind,
+    ExternalInterface, IntegrationPipeline, PostgresTlsMode as RuntimePostgresTlsMode,
+    RestAuthKind, RestPaginationKind as RuntimeRestPaginationKind,
 };
 
 #[derive(Debug, Parser)]
@@ -267,5 +267,9 @@ fn db_config_from_interface(
         kind,
         connection: db.connection.clone(),
         query: db.query.clone(),
+        postgres_tls_mode: db.postgres_tls_mode.map(|mode| match mode {
+            RuntimePostgresTlsMode::Disable => DriverPostgresTlsMode::Disable,
+            RuntimePostgresTlsMode::Require => DriverPostgresTlsMode::Require,
+        }),
     })
 }

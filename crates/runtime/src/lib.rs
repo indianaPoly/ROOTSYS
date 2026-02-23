@@ -341,6 +341,8 @@ pub struct DbDriverConfig {
     pub kind: DbKind,
     pub connection: String,
     pub query: String,
+    #[serde(default)]
+    pub postgres_tls_mode: Option<PostgresTlsMode>,
 }
 
 /// Supported database kinds for DB drivers.
@@ -351,6 +353,13 @@ pub enum DbKind {
     Sqlite,
     Postgres,
     Mysql,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PostgresTlsMode {
+    Disable,
+    Require,
 }
 
 impl ExternalInterface {
@@ -742,6 +751,15 @@ impl ExternalInterface {
                             code: "DB_QUERY_EMPTY".to_string(),
                             path: "/driver/db/query".to_string(),
                             message: "query is required for db driver".to_string(),
+                        });
+                    }
+
+                    if db.postgres_tls_mode.is_some() && db.kind != DbKind::Postgres {
+                        errors.push(ValidationError {
+                            code: "DB_TLS_MODE_ONLY_FOR_POSTGRES".to_string(),
+                            path: "/driver/db/postgres_tls_mode".to_string(),
+                            message: "postgres_tls_mode is only valid when db.kind is 'postgres'"
+                                .to_string(),
                         });
                     }
                 }
@@ -1462,6 +1480,47 @@ mod tests {
                             "max_pages": 10
                         }
                     }
+                }
+            }
+        }"#;
+
+        let interface: ExternalInterface = serde_json::from_str(json).unwrap();
+        interface.validate().unwrap();
+    }
+
+    #[test]
+    fn errors_when_postgres_tls_mode_used_for_non_postgres_db() {
+        let json = r#"{
+            "name": "db-sample",
+            "version": "v1",
+            "driver": {
+                "kind": "db",
+                "db": {
+                    "kind": "sqlite",
+                    "connection": "./sample.db",
+                    "query": "select 1",
+                    "postgres_tls_mode": "require"
+                }
+            }
+        }"#;
+
+        let interface: ExternalInterface = serde_json::from_str(json).unwrap();
+        let errors = interface.validate().unwrap_err();
+        assert!(has_code(&errors, "DB_TLS_MODE_ONLY_FOR_POSTGRES"));
+    }
+
+    #[test]
+    fn postgres_tls_mode_require_validates_for_postgres_db() {
+        let json = r#"{
+            "name": "db-sample",
+            "version": "v1",
+            "driver": {
+                "kind": "db",
+                "db": {
+                    "kind": "postgres",
+                    "connection": "host=localhost user=app password=secret dbname=ops",
+                    "query": "select 1",
+                    "postgres_tls_mode": "require"
                 }
             }
         }"#;
