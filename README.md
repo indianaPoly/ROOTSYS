@@ -135,7 +135,15 @@ The interface JSON drives the pipeline. Example:
     "rest": {
       "url": "https://api.example.com/events",
       "method": "GET",
-      "headers": { "Authorization": "Bearer ..." },
+      "headers": { "Accept": "application/json" },
+      "auth": {
+        "kind": "api_key",
+        "api_key": {
+          "in": "header",
+          "name": "X-API-KEY",
+          "value": "<token>"
+        }
+      },
       "timeout_ms": 5000,
       "response_format": "json",
       "items_pointer": "/items"
@@ -146,6 +154,7 @@ The interface JSON drives the pipeline. Example:
 ```
 - `items_pointer` is optional. If it points to a JSON array, one record is created per element.
 - If `response_format` is `unknown`, the driver tries JSON, then UTF-8 text, then falls back to binary.
+- API key auth supports `in: "header"` and `in: "query"` injection modes.
 
 ### Driver: DB (sqlite)
 ```json

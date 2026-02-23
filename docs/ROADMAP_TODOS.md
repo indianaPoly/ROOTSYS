@@ -38,7 +38,7 @@ Use it as the source of truth for priorities, and mirror each item into GitHub I
 - [x] Roadmap(A1-4): Improve validation reporting (structured error codes vs free-form strings)
 
 ## A2. Drivers (REST/DB/File) Productionization
-- [ ] Roadmap(A2-1): REST auth helper: API key (header/query) injection policy
+- [x] Roadmap(A2-1): REST auth helper: API key (header/query) injection policy
 - [ ] Roadmap(A2-2): REST auth helper: OAuth2 client-credentials token fetch + caching
 - [ ] Roadmap(A2-3): REST pagination: cursor-based (config-driven) + record emission rules
 - [ ] Roadmap(A2-4): REST pagination: page/page_size mode (optional second strategy)
