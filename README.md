@@ -104,6 +104,24 @@ cargo run -p shell -- \
 - Current MVP behavior: `driver.stream.kafka.mvp_input` is consumed as the stream source.
 - This keeps payload normalization identical to other drivers while streaming runtime semantics evolve.
 
+### Scheduler integration (interval mode)
+- Default run mode is one-shot (`--schedule-mode once`).
+- Interval mode executes the same interface repeatedly:
+  - `--schedule-mode interval`
+  - `--interval-seconds <n>`
+  - `--max-runs <n>`
+
+Example (run stream interface every 5s, 3 times):
+```bash
+cargo run -p shell -- \
+  --interface tests/fixtures/interfaces/stream.kafka.sample.json \
+  --contract-registry system/contracts/reference/allowlist.json \
+  --output /tmp/stream.scheduled.output.jsonl \
+  --schedule-mode interval \
+  --interval-seconds 5 \
+  --max-runs 3
+```
+
 ### Merge integration outputs
 ```bash
 cargo run -p fabric -- \
