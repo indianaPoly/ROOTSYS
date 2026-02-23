@@ -283,7 +283,11 @@ Page/page_size pagination example:
       "kind": "postgres",
       "connection": "host=localhost user=app password=secret dbname=ops",
       "query": "SELECT * FROM defect_events",
-      "postgres_tls_mode": "require"
+      "postgres_tls_mode": "require",
+      "pool": {
+        "min_connections": 1,
+        "max_connections": 10
+      }
     }
   },
   "payload_format": "json"
@@ -298,7 +302,11 @@ Page/page_size pagination example:
     "db": {
       "kind": "mysql",
       "connection": "mysql://app:secret@localhost:3306/ops",
-      "query": "SELECT * FROM defect_events"
+      "query": "SELECT * FROM defect_events",
+      "pool": {
+        "min_connections": 1,
+        "max_connections": 10
+      }
     }
   },
   "payload_format": "json"
@@ -308,6 +316,8 @@ Page/page_size pagination example:
 - `postgres_tls_mode` supports:
   - `disable` (default)
   - `require`
+- `pool` is optional and supported for `postgres` and `mysql`.
+- Pool defaults (when omitted): `min_connections=1`, `max_connections=10`.
 
 ## Output Records
 - `IntegrationRecord` retains the raw payload plus metadata and pipeline annotations.

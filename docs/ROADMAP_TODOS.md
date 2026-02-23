@@ -44,7 +44,7 @@ Use it as the source of truth for priorities, and mirror each item into GitHub I
 - [x] Roadmap(A2-4): REST pagination: page/page_size mode (optional second strategy)
 - [x] Roadmap(A2-5): REST request policy: timeouts/rate-limit notes + safe defaults
 - [x] Roadmap(A2-6): DB TLS support for Postgres connections (configurable)
-- [ ] Roadmap(A2-7): DB connection pooling configuration (MySQL pool options + Postgres equivalent)
+- [x] Roadmap(A2-7): DB connection pooling configuration (MySQL pool options + Postgres equivalent)
 - [ ] Roadmap(A2-8): Standardize driver metadata capture (content_type/filename + optional source details)
 
 ## A3. Resilience (Retry/Backoff/Circuit Breaker)
