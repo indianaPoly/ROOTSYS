@@ -41,7 +41,7 @@ Use it as the source of truth for priorities, and mirror each item into GitHub I
 - [x] Roadmap(A2-1): REST auth helper: API key (header/query) injection policy
 - [x] Roadmap(A2-2): REST auth helper: OAuth2 client-credentials token fetch + caching
 - [x] Roadmap(A2-3): REST pagination: cursor-based (config-driven) + record emission rules
-- [ ] Roadmap(A2-4): REST pagination: page/page_size mode (optional second strategy)
+- [x] Roadmap(A2-4): REST pagination: page/page_size mode (optional second strategy)
 - [ ] Roadmap(A2-5): REST request policy: timeouts/rate-limit notes + safe defaults
 - [ ] Roadmap(A2-6): DB TLS support for Postgres connections (configurable)
 - [ ] Roadmap(A2-7): DB connection pooling configuration (MySQL pool options + Postgres equivalent)

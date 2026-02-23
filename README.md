@@ -159,9 +159,13 @@ The interface JSON drives the pipeline. Example:
   `token_url`, `client_id`, `client_secret`, and optional `scope`.
 - OAuth2 access tokens are cached in-memory and refreshed before expiry.
 - Cursor pagination is supported via `pagination.kind = "cursor"`.
+- Page/page_size pagination is supported via `pagination.kind = "page"`.
 - Cursor record emission rules:
   - `items_pointer` points to an array -> emit one record per item.
   - `items_pointer` omitted or non-array target -> emit one record per page payload.
+- Page/page_size record emission rules:
+  - `items_pointer` points to an array -> emit one record per item.
+  - emission stops when a page emits zero records, or `max_pages` is reached.
 
 OAuth2 example:
 ```json
@@ -208,6 +212,34 @@ Cursor pagination example:
           "cursor_path": "/next_cursor",
           "initial_cursor": "",
           "max_pages": 100
+        }
+      }
+    }
+  },
+  "payload_format": "json"
+}
+```
+
+Page/page_size pagination example:
+```json
+{
+  "name": "external-api",
+  "version": "v1",
+  "driver": {
+    "kind": "rest",
+    "rest": {
+      "url": "https://api.example.com/events",
+      "method": "GET",
+      "response_format": "json",
+      "items_pointer": "/items",
+      "pagination": {
+        "kind": "page",
+        "page": {
+          "page_param": "page",
+          "page_size_param": "page_size",
+          "page_size": 100,
+          "initial_page": 1,
+          "max_pages": 50
         }
       }
     }
