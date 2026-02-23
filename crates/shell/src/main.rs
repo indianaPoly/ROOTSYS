@@ -8,8 +8,9 @@ use common::PayloadFormat;
 use drivers::{
     ApiKeyAuthConfig, ApiKeyLocation, BinaryFileDriver,
     CursorPaginationConfig as DriverCursorPaginationConfig, DbConfig, DbDriver, DbKind,
-    ExternalSystem, InputSource, JsonlDriver, OAuth2ClientCredentialsAuthConfig, RestConfig,
-    RestDriver, RestPaginationConfig as DriverRestPaginationConfig,
+    ExternalSystem, InputSource, JsonlDriver, OAuth2ClientCredentialsAuthConfig,
+    PagePaginationConfig as DriverPagePaginationConfig, RestConfig, RestDriver,
+    RestPaginationConfig as DriverRestPaginationConfig,
     RestPaginationKind as DriverRestPaginationKind, TextLineDriver,
 };
 use runtime::{
@@ -207,24 +208,42 @@ fn rest_config_from_interface(
                 None
             }
         }),
-        pagination: rest.pagination.as_ref().and_then(|pagination| {
-            if pagination.kind == RuntimeRestPaginationKind::Cursor {
-                pagination
-                    .cursor
-                    .as_ref()
-                    .map(|cursor| DriverRestPaginationConfig {
-                        kind: DriverRestPaginationKind::Cursor,
-                        cursor: Some(DriverCursorPaginationConfig {
-                            cursor_param: cursor.cursor_param.clone(),
-                            cursor_path: cursor.cursor_path.clone(),
-                            initial_cursor: cursor.initial_cursor.clone(),
-                            max_pages: cursor.max_pages,
-                        }),
-                    })
-            } else {
-                None
-            }
-        }),
+        pagination: rest
+            .pagination
+            .as_ref()
+            .and_then(|pagination| match pagination.kind {
+                RuntimeRestPaginationKind::Cursor => {
+                    pagination
+                        .cursor
+                        .as_ref()
+                        .map(|cursor| DriverRestPaginationConfig {
+                            kind: DriverRestPaginationKind::Cursor,
+                            cursor: Some(DriverCursorPaginationConfig {
+                                cursor_param: cursor.cursor_param.clone(),
+                                cursor_path: cursor.cursor_path.clone(),
+                                initial_cursor: cursor.initial_cursor.clone(),
+                                max_pages: cursor.max_pages,
+                            }),
+                            page: None,
+                        })
+                }
+                RuntimeRestPaginationKind::Page => {
+                    pagination
+                        .page
+                        .as_ref()
+                        .map(|page| DriverRestPaginationConfig {
+                            kind: DriverRestPaginationKind::Page,
+                            cursor: None,
+                            page: Some(DriverPagePaginationConfig {
+                                page_param: page.page_param.clone(),
+                                page_size_param: page.page_size_param.clone(),
+                                page_size: page.page_size,
+                                initial_page: page.initial_page,
+                                max_pages: page.max_pages,
+                            }),
+                        })
+                }
+            }),
     })
 }
 

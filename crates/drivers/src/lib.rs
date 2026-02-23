@@ -243,11 +243,13 @@ pub struct OAuth2ClientCredentialsAuthConfig {
 pub struct RestPaginationConfig {
     pub kind: RestPaginationKind,
     pub cursor: Option<CursorPaginationConfig>,
+    pub page: Option<PagePaginationConfig>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RestPaginationKind {
     Cursor,
+    Page,
 }
 
 #[derive(Debug, Clone)]
@@ -255,6 +257,15 @@ pub struct CursorPaginationConfig {
     pub cursor_param: String,
     pub cursor_path: String,
     pub initial_cursor: Option<String>,
+    pub max_pages: Option<u32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PagePaginationConfig {
+    pub page_param: String,
+    pub page_size_param: String,
+    pub page_size: u32,
+    pub initial_page: Option<u32>,
     pub max_pages: Option<u32>,
 }
 
@@ -357,6 +368,9 @@ impl ExternalSystem for RestDriver {
             match pagination.kind {
                 RestPaginationKind::Cursor => {
                     return self.fetch_cursor_paginated(&agent, &pagination);
+                }
+                RestPaginationKind::Page => {
+                    return self.fetch_page_paginated(&agent, &pagination);
                 }
             }
         }
@@ -516,6 +530,112 @@ impl RestDriver {
                 }
                 None => break,
             }
+        }
+
+        Ok(records)
+    }
+
+    fn fetch_page_paginated(
+        &mut self,
+        agent: &ureq::Agent,
+        pagination: &RestPaginationConfig,
+    ) -> Result<Vec<ExternalRecord>, DriverError> {
+        let page_cfg = pagination.page.as_ref().ok_or_else(|| {
+            DriverError::InvalidResponse("page pagination config is missing".to_string())
+        })?;
+
+        let mut records = Vec::new();
+        let mut page = page_cfg.initial_page.unwrap_or(1);
+        let mut pages = 0u32;
+
+        loop {
+            if let Some(max_pages) = page_cfg.max_pages {
+                if pages >= max_pages {
+                    break;
+                }
+            }
+
+            let method = self
+                .config
+                .method
+                .clone()
+                .unwrap_or_else(|| "GET".to_string());
+
+            let mut request = agent.request(&method, &self.config.url);
+
+            request = request.query(&page_cfg.page_param, &page.to_string());
+            request = request.query(&page_cfg.page_size_param, &page_cfg.page_size.to_string());
+
+            if let Some(oauth2) = self.config.oauth2_auth.clone() {
+                let bearer = self.get_bearer_token(agent, &oauth2)?;
+                request = request.set("Authorization", &format!("Bearer {bearer}"));
+            }
+
+            if let Some(auth) = &self.config.api_key_auth {
+                match auth.location {
+                    ApiKeyLocation::Header => {
+                        request = request.set(&auth.name, &auth.value);
+                    }
+                    ApiKeyLocation::Query => {
+                        request = request.query(&auth.name, &auth.value);
+                    }
+                }
+            }
+
+            for (key, value) in &self.config.headers {
+                request = request.set(key, value);
+            }
+
+            let response = match &self.config.body {
+                Some(body) => request.send_string(body),
+                None => request.call(),
+            };
+
+            let response = match response {
+                Ok(response) => response,
+                Err(ureq::Error::Status(status, response)) => {
+                    let body = response.into_string().unwrap_or_default();
+                    return Err(DriverError::HttpStatus { status, body });
+                }
+                Err(err) => return Err(DriverError::Http(err)),
+            };
+
+            let content_type = response
+                .header("content-type")
+                .map(|value| value.to_string());
+            let mut bytes = Vec::new();
+            response.into_reader().read_to_end(&mut bytes)?;
+
+            let metadata = metadata_with_content_type(
+                self.metadata.clone(),
+                content_type.clone(),
+                "application/octet-stream",
+                None,
+            );
+
+            let response_format = match self.config.response_format {
+                PayloadFormat::Unknown => infer_format(&bytes, content_type.as_deref()),
+                other => other,
+            };
+
+            if response_format != PayloadFormat::Json {
+                return Err(DriverError::InvalidResponse(
+                    "page pagination requires json responses".to_string(),
+                ));
+            }
+
+            let value: serde_json::Value = serde_json::from_slice(&bytes)
+                .map_err(|err| DriverError::InvalidResponse(err.to_string()))?;
+
+            let page_records = json_value_to_records(&value, &metadata, &self.config)?;
+            let emitted_count = page_records.len();
+            records.extend(page_records);
+
+            pages += 1;
+            if emitted_count == 0 {
+                break;
+            }
+            page += 1;
         }
 
         Ok(records)

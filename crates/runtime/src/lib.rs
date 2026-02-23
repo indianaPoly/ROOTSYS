@@ -252,13 +252,16 @@ pub struct RestPaginationConfig {
     pub kind: RestPaginationKind,
     #[serde(default)]
     pub cursor: Option<CursorPaginationConfig>,
+    #[serde(default)]
+    pub page: Option<PagePaginationConfig>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RestPaginationKind {
-    #[default]
     Cursor,
+    #[default]
+    Page,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -268,6 +271,18 @@ pub struct CursorPaginationConfig {
     pub cursor_path: String,
     #[serde(default)]
     pub initial_cursor: Option<String>,
+    #[serde(default)]
+    pub max_pages: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PagePaginationConfig {
+    pub page_param: String,
+    pub page_size_param: String,
+    pub page_size: u32,
+    #[serde(default)]
+    pub initial_page: Option<u32>,
     #[serde(default)]
     pub max_pages: Option<u32>,
 }
@@ -597,6 +612,88 @@ impl ExternalInterface {
                                             code: "REST_PAGINATION_REQUIRES_JSON_RESPONSE".to_string(),
                                             path: "/driver/rest/response_format".to_string(),
                                             message: "cursor pagination requires response_format 'json' or 'unknown'"
+                                                .to_string(),
+                                        });
+                                    }
+                                }
+                            }
+                            RestPaginationKind::Page => {
+                                if pagination.page.is_none() {
+                                    errors.push(ValidationError {
+                                        code: "REST_PAGINATION_PAGE_REQUIRED".to_string(),
+                                        path: "/driver/rest/pagination/page".to_string(),
+                                        message:
+                                            "page config is required when pagination.kind is 'page'"
+                                                .to_string(),
+                                    });
+                                }
+
+                                if let Some(page) = &pagination.page {
+                                    if page.page_param.trim().is_empty() {
+                                        errors.push(ValidationError {
+                                            code: "REST_PAGINATION_PAGE_PARAM_EMPTY".to_string(),
+                                            path: "/driver/rest/pagination/page/page_param"
+                                                .to_string(),
+                                            message: "page_param must be a non-empty string"
+                                                .to_string(),
+                                        });
+                                    }
+
+                                    if page.page_size_param.trim().is_empty() {
+                                        errors.push(ValidationError {
+                                            code: "REST_PAGINATION_PAGE_SIZE_PARAM_EMPTY"
+                                                .to_string(),
+                                            path: "/driver/rest/pagination/page/page_size_param"
+                                                .to_string(),
+                                            message: "page_size_param must be a non-empty string"
+                                                .to_string(),
+                                        });
+                                    }
+
+                                    if page.page_size == 0 {
+                                        errors.push(ValidationError {
+                                            code: "REST_PAGINATION_PAGE_SIZE_INVALID".to_string(),
+                                            path: "/driver/rest/pagination/page/page_size"
+                                                .to_string(),
+                                            message: "page_size must be > 0".to_string(),
+                                        });
+                                    }
+
+                                    if let Some(initial_page) = page.initial_page {
+                                        if initial_page == 0 {
+                                            errors.push(ValidationError {
+                                                code: "REST_PAGINATION_INITIAL_PAGE_INVALID"
+                                                    .to_string(),
+                                                path: "/driver/rest/pagination/page/initial_page"
+                                                    .to_string(),
+                                                message: "initial_page must be > 0 when provided"
+                                                    .to_string(),
+                                            });
+                                        }
+                                    }
+
+                                    if let Some(max_pages) = page.max_pages {
+                                        if max_pages == 0 {
+                                            errors.push(ValidationError {
+                                                code: "REST_PAGINATION_PAGE_MAX_PAGES_INVALID"
+                                                    .to_string(),
+                                                path: "/driver/rest/pagination/page/max_pages"
+                                                    .to_string(),
+                                                message: "max_pages must be > 0 when provided"
+                                                    .to_string(),
+                                            });
+                                        }
+                                    }
+                                }
+
+                                if let Some(response_format) = rest.response_format {
+                                    if response_format != PayloadFormat::Json
+                                        && response_format != PayloadFormat::Unknown
+                                    {
+                                        errors.push(ValidationError {
+                                            code: "REST_PAGINATION_REQUIRES_JSON_RESPONSE".to_string(),
+                                            path: "/driver/rest/response_format".to_string(),
+                                            message: "pagination requires response_format 'json' or 'unknown'"
                                                 .to_string(),
                                         });
                                     }
@@ -1280,6 +1377,89 @@ mod tests {
                             "cursor_param": "cursor",
                             "cursor_path": "/next_cursor",
                             "max_pages": 100
+                        }
+                    }
+                }
+            }
+        }"#;
+
+        let interface: ExternalInterface = serde_json::from_str(json).unwrap();
+        interface.validate().unwrap();
+    }
+
+    #[test]
+    fn errors_when_page_pagination_missing_page_config() {
+        let json = r#"{
+            "name": "rest-paging",
+            "version": "v1",
+            "driver": {
+                "kind": "rest",
+                "rest": {
+                    "url": "https://api.example.com/events",
+                    "pagination": {
+                        "kind": "page"
+                    }
+                }
+            }
+        }"#;
+
+        let interface: ExternalInterface = serde_json::from_str(json).unwrap();
+        let errors = interface.validate().unwrap_err();
+        assert!(has_code(&errors, "REST_PAGINATION_PAGE_REQUIRED"));
+    }
+
+    #[test]
+    fn errors_when_page_pagination_has_invalid_fields() {
+        let json = r#"{
+            "name": "rest-paging",
+            "version": "v1",
+            "driver": {
+                "kind": "rest",
+                "rest": {
+                    "url": "https://api.example.com/events",
+                    "response_format": "text",
+                    "pagination": {
+                        "kind": "page",
+                        "page": {
+                            "page_param": "",
+                            "page_size_param": "",
+                            "page_size": 0,
+                            "initial_page": 0,
+                            "max_pages": 0
+                        }
+                    }
+                }
+            }
+        }"#;
+
+        let interface: ExternalInterface = serde_json::from_str(json).unwrap();
+        let errors = interface.validate().unwrap_err();
+        assert!(has_code(&errors, "REST_PAGINATION_PAGE_PARAM_EMPTY"));
+        assert!(has_code(&errors, "REST_PAGINATION_PAGE_SIZE_PARAM_EMPTY"));
+        assert!(has_code(&errors, "REST_PAGINATION_PAGE_SIZE_INVALID"));
+        assert!(has_code(&errors, "REST_PAGINATION_INITIAL_PAGE_INVALID"));
+        assert!(has_code(&errors, "REST_PAGINATION_PAGE_MAX_PAGES_INVALID"));
+        assert!(has_code(&errors, "REST_PAGINATION_REQUIRES_JSON_RESPONSE"));
+    }
+
+    #[test]
+    fn page_pagination_valid_config_passes_validation() {
+        let json = r#"{
+            "name": "rest-paging",
+            "version": "v1",
+            "driver": {
+                "kind": "rest",
+                "rest": {
+                    "url": "https://api.example.com/events",
+                    "response_format": "json",
+                    "pagination": {
+                        "kind": "page",
+                        "page": {
+                            "page_param": "page",
+                            "page_size_param": "page_size",
+                            "page_size": 100,
+                            "initial_page": 1,
+                            "max_pages": 10
                         }
                     }
                 }
