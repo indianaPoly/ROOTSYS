@@ -239,6 +239,40 @@ pub struct RestDriverConfig {
     pub response_format: Option<PayloadFormat>,
     #[serde(default)]
     pub items_pointer: Option<String>,
+    #[serde(default)]
+    pub auth: Option<RestAuthConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RestAuthConfig {
+    #[serde(default)]
+    pub kind: RestAuthKind,
+    #[serde(default)]
+    pub api_key: Option<ApiKeyAuthConfig>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RestAuthKind {
+    #[default]
+    ApiKey,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApiKeyAuthConfig {
+    #[serde(rename = "in")]
+    pub location: ApiKeyLocation,
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ApiKeyLocation {
+    Header,
+    Query,
 }
 
 /// DB driver configuration payload.
@@ -367,6 +401,53 @@ impl ExternalInterface {
                                 path: "/driver/rest/items_pointer".to_string(),
                                 message: message.to_string(),
                             });
+                        }
+                    }
+
+                    if let Some(auth) = &rest.auth {
+                        match auth.kind {
+                            RestAuthKind::ApiKey => {
+                                if auth.api_key.is_none() {
+                                    errors.push(ValidationError {
+                                        code: "REST_AUTH_API_KEY_REQUIRED".to_string(),
+                                        path: "/driver/rest/auth/api_key".to_string(),
+                                        message:
+                                            "api_key config is required when auth.kind is 'api_key'"
+                                                .to_string(),
+                                    });
+                                }
+
+                                if let Some(api_key) = &auth.api_key {
+                                    if api_key.name.trim().is_empty() {
+                                        errors.push(ValidationError {
+                                            code: "REST_AUTH_API_KEY_NAME_EMPTY".to_string(),
+                                            path: "/driver/rest/auth/api_key/name".to_string(),
+                                            message: "name must be a non-empty string".to_string(),
+                                        });
+                                    }
+
+                                    if api_key.value.trim().is_empty() {
+                                        errors.push(ValidationError {
+                                            code: "REST_AUTH_API_KEY_VALUE_EMPTY".to_string(),
+                                            path: "/driver/rest/auth/api_key/value".to_string(),
+                                            message: "value must be a non-empty string".to_string(),
+                                        });
+                                    }
+
+                                    if api_key.location == ApiKeyLocation::Header
+                                        && rest.headers.contains_key(&api_key.name)
+                                    {
+                                        errors.push(ValidationError {
+                                            code: "REST_AUTH_API_KEY_HEADER_CONFLICT".to_string(),
+                                            path: "/driver/rest/headers".to_string(),
+                                            message: format!(
+                                                "header '{}' conflicts with api_key auth header injection",
+                                                api_key.name
+                                            ),
+                                        });
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -852,6 +933,81 @@ mod tests {
         let interface: ExternalInterface = serde_json::from_str(json).unwrap();
         let errors = interface.validate().unwrap_err();
         assert!(has_path(&errors, "/driver/rest/items_pointer"));
+    }
+
+    #[test]
+    fn errors_when_api_key_auth_missing_payload() {
+        let json = r#"{
+            "name": "rest-auth",
+            "version": "v1",
+            "driver": {
+                "kind": "rest",
+                "rest": {
+                    "url": "https://api.example.com/events",
+                    "auth": {
+                        "kind": "api_key"
+                    }
+                }
+            }
+        }"#;
+
+        let interface: ExternalInterface = serde_json::from_str(json).unwrap();
+        let errors = interface.validate().unwrap_err();
+        assert!(has_code(&errors, "REST_AUTH_API_KEY_REQUIRED"));
+    }
+
+    #[test]
+    fn errors_when_api_key_auth_fields_are_empty() {
+        let json = r#"{
+            "name": "rest-auth",
+            "version": "v1",
+            "driver": {
+                "kind": "rest",
+                "rest": {
+                    "url": "https://api.example.com/events",
+                    "auth": {
+                        "kind": "api_key",
+                        "api_key": {
+                            "in": "header",
+                            "name": "",
+                            "value": ""
+                        }
+                    }
+                }
+            }
+        }"#;
+
+        let interface: ExternalInterface = serde_json::from_str(json).unwrap();
+        let errors = interface.validate().unwrap_err();
+        assert!(has_code(&errors, "REST_AUTH_API_KEY_NAME_EMPTY"));
+        assert!(has_code(&errors, "REST_AUTH_API_KEY_VALUE_EMPTY"));
+    }
+
+    #[test]
+    fn errors_when_api_key_header_conflicts_with_static_headers() {
+        let json = r#"{
+            "name": "rest-auth",
+            "version": "v1",
+            "driver": {
+                "kind": "rest",
+                "rest": {
+                    "url": "https://api.example.com/events",
+                    "headers": { "X-API-KEY": "legacy" },
+                    "auth": {
+                        "kind": "api_key",
+                        "api_key": {
+                            "in": "header",
+                            "name": "X-API-KEY",
+                            "value": "secret"
+                        }
+                    }
+                }
+            }
+        }"#;
+
+        let interface: ExternalInterface = serde_json::from_str(json).unwrap();
+        let errors = interface.validate().unwrap_err();
+        assert!(has_code(&errors, "REST_AUTH_API_KEY_HEADER_CONFLICT"));
     }
 
     #[test]

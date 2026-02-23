@@ -213,6 +213,20 @@ pub struct RestConfig {
     pub timeout_ms: Option<u64>,
     pub response_format: PayloadFormat,
     pub items_pointer: Option<String>,
+    pub api_key_auth: Option<ApiKeyAuthConfig>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApiKeyLocation {
+    Header,
+    Query,
+}
+
+#[derive(Debug, Clone)]
+pub struct ApiKeyAuthConfig {
+    pub location: ApiKeyLocation,
+    pub name: String,
+    pub value: String,
 }
 
 /// REST driver that fetches records from HTTP endpoints.
@@ -247,6 +261,18 @@ impl ExternalSystem for RestDriver {
             .unwrap_or_else(|| "GET".to_string());
 
         let mut request = agent.request(&method, &self.config.url);
+
+        if let Some(auth) = &self.config.api_key_auth {
+            match auth.location {
+                ApiKeyLocation::Header => {
+                    request = request.set(&auth.name, &auth.value);
+                }
+                ApiKeyLocation::Query => {
+                    request = request.query(&auth.name, &auth.value);
+                }
+            }
+        }
+
         for (key, value) in &self.config.headers {
             request = request.set(key, value);
         }

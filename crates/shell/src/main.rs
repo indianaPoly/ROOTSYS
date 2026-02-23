@@ -6,11 +6,12 @@ use clap::Parser;
 use clap::ValueEnum;
 use common::PayloadFormat;
 use drivers::{
-    BinaryFileDriver, DbConfig, DbDriver, DbKind, ExternalSystem, InputSource, JsonlDriver,
-    RestConfig, RestDriver, TextLineDriver,
+    ApiKeyAuthConfig, ApiKeyLocation, BinaryFileDriver, DbConfig, DbDriver, DbKind, ExternalSystem,
+    InputSource, JsonlDriver, RestConfig, RestDriver, TextLineDriver,
 };
 use runtime::{
-    ContractRegistry, DbKind as RuntimeDbKind, DriverKind, ExternalInterface, IntegrationPipeline,
+    ApiKeyLocation as RuntimeApiKeyLocation, ContractRegistry, DbKind as RuntimeDbKind, DriverKind,
+    ExternalInterface, IntegrationPipeline,
 };
 
 #[derive(Debug, Parser)]
@@ -174,6 +175,16 @@ fn rest_config_from_interface(
         timeout_ms: rest.timeout_ms,
         response_format: rest.response_format.unwrap_or(PayloadFormat::Unknown),
         items_pointer: rest.items_pointer.clone(),
+        api_key_auth: rest.auth.as_ref().and_then(|auth| {
+            auth.api_key.as_ref().map(|api_key| ApiKeyAuthConfig {
+                location: match api_key.location {
+                    RuntimeApiKeyLocation::Header => ApiKeyLocation::Header,
+                    RuntimeApiKeyLocation::Query => ApiKeyLocation::Query,
+                },
+                name: api_key.name.clone(),
+                value: api_key.value.clone(),
+            })
+        }),
     })
 }
 
