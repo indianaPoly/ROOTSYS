@@ -26,7 +26,7 @@ The pipeline works in three steps:
   - File drivers: `jsonl`, `text`, `binary`
   - REST driver: basic GET/POST with headers and optional body
   - DB driver: `sqlite`, `postgres`, `mysql`
-- **DLQ (dead letter) handling** for payloads that fail validation.
+- **DLQ (dead letter) handling** with a pluggable sink interface (file sink implemented by default).
 - **Merge layer** to combine multiple pipeline outputs with optional dedupe.
 
 ## How To Run
@@ -382,10 +382,9 @@ Page/page_size pagination example:
 - Operational strategy reference: `docs/runbooks/idempotency_dedupe_strategy.md`.
 
 ## Next Steps (Planned)
-1. Add REST auth helpers (OAuth, API keys) and pagination.
-2. Persist DLQ to external storage (S3, DB, queue).
-3. Add schema registry or contract versioning enforcement.
-4. Add streaming drivers (Kafka, CDC) and scheduler integration.
+1. Persist DLQ to external storage (S3, DB, queue).
+2. Add schema registry or contract versioning enforcement.
+3. Add streaming drivers (Kafka, CDC) and scheduler integration.
 
 ## Verification
 Build/test is currently **NOT VERIFIED** in this environment due to restricted network access for crates.io.
