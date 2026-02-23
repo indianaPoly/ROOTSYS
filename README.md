@@ -321,6 +321,10 @@ Page/page_size pagination example:
 
 ## Output Records
 - `IntegrationRecord` retains the raw payload plus metadata and pipeline annotations.
+- `metadata` is standardized across drivers:
+  - `content_type`
+  - `filename`
+  - optional `source_details` (`source_type`, optional `locator`)
 - `IntegrationRecord.warnings` and `DeadLetter.errors` are structured messages:
   - `code`: machine-readable error/warning code
   - `path`: optional JSON path/pointer context
