@@ -417,6 +417,8 @@ Page/page_size pagination example:
   - `path`: optional JSON path/pointer context
   - `message`: human-readable detail
 - `DeadLetter` retains the raw payload plus structured validation errors.
+- `DeadLetter.reason_codes` stores unique machine-readable reason code list.
+- `DeadLetter.lineage` stores rejection lineage metadata (`pipeline_stage`, `driver_kind`, `record_id_policy`, source context).
 ## Merge Output
 - The merge layer outputs the same `IntegrationRecord` JSONL format.
 - When dedupe is enabled, it removes duplicates by `(source, interface.name, interface.version, record_id)`.

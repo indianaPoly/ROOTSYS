@@ -57,7 +57,7 @@ Use it as the source of truth for priorities, and mirror each item into GitHub I
 - [x] Roadmap(A4-1): Add DLQ sink interface (file today → pluggable sink)
 - [x] Roadmap(A4-2): Implement DLQ persistence to one external backend (choose: S3/DB/Queue)
 - [x] Roadmap(A4-3): Implement DLQ replay CLI/job (DLQ → re-integrate with new interface)
-- [ ] Roadmap(A4-4): Enrich DLQ entries with structured reason codes + lineage metadata
+- [x] Roadmap(A4-4): Enrich DLQ entries with structured reason codes + lineage metadata
 
 ## A5. Streaming + Scheduling
 - [ ] Roadmap(A5-1): Choose first streaming source (Kafka vs CDC) and define minimal interface
