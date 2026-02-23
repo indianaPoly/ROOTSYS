@@ -159,6 +159,7 @@ fn metadata_from_interface(interface: &ExternalInterface) -> common::RecordMetad
     common::RecordMetadata {
         content_type: interface.driver.content_type.clone(),
         filename: interface.driver.filename.clone(),
+        source_details: None,
     }
 }
 

@@ -71,6 +71,15 @@ impl Payload {
 pub struct RecordMetadata {
     pub content_type: Option<String>,
     pub filename: Option<String>,
+    #[serde(default)]
+    pub source_details: Option<SourceDetails>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceDetails {
+    pub source_type: String,
+    #[serde(default)]
+    pub locator: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

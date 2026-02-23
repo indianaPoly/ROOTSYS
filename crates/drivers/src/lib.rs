@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use common::{ExternalRecord, Payload, PayloadFormat, RecordMetadata};
+use common::{ExternalRecord, Payload, PayloadFormat, RecordMetadata, SourceDetails};
 use mysql::prelude::Queryable;
 use thiserror::Error;
 
@@ -74,6 +74,13 @@ impl InputSource {
                 .and_then(|name| name.to_str())
                 .map(|name| name.to_string()),
             InputSource::Stdin => None,
+        }
+    }
+
+    fn locator(&self) -> String {
+        match self {
+            InputSource::File(path) => path.to_string_lossy().to_string(),
+            InputSource::Stdin => "stdin".to_string(),
         }
     }
 
@@ -385,6 +392,8 @@ impl ExternalSystem for RestDriver {
             "application/octet-stream",
             None,
         );
+        let metadata =
+            metadata_with_source_details(metadata, "rest", Some(self.config.url.clone()));
 
         let response_format = match self.config.response_format {
             PayloadFormat::Unknown => infer_format(&bytes, content_type.as_deref()),
@@ -496,6 +505,8 @@ impl RestDriver {
                 "application/octet-stream",
                 None,
             );
+            let metadata =
+                metadata_with_source_details(metadata, "rest", Some(self.config.url.clone()));
 
             let response_format = match self.config.response_format {
                 PayloadFormat::Unknown => infer_format(&bytes, content_type.as_deref()),
@@ -612,6 +623,8 @@ impl RestDriver {
                 "application/octet-stream",
                 None,
             );
+            let metadata =
+                metadata_with_source_details(metadata, "rest", Some(self.config.url.clone()));
 
             let response_format = match self.config.response_format {
                 PayloadFormat::Unknown => infer_format(&bytes, content_type.as_deref()),
@@ -716,6 +729,7 @@ fn fetch_sqlite(
     let mut rows = stmt.query([])?;
     let mut records = Vec::new();
     let metadata = metadata_with_content_type(metadata.clone(), None, "application/json", None);
+    let metadata = metadata_with_source_details(metadata, "db/sqlite", None);
 
     while let Some(row) = rows.next()? {
         let mut map = serde_json::Map::new();
@@ -787,6 +801,7 @@ fn fetch_postgres(
     };
 
     let metadata = metadata_with_content_type(metadata.clone(), None, "application/json", None);
+    let metadata = metadata_with_source_details(metadata, "db/postgres", None);
 
     let mut records = Vec::new();
     for row in rows {
@@ -832,6 +847,7 @@ fn fetch_mysql(
         .collect();
 
     let metadata = metadata_with_content_type(metadata.clone(), None, "application/json", None);
+    let metadata = metadata_with_source_details(metadata, "db/mysql", None);
 
     let mut records = Vec::new();
     for row_result in result {
@@ -1080,7 +1096,9 @@ fn metadata_from_source(
     source: &InputSource,
     default_content_type: &str,
 ) -> RecordMetadata {
-    metadata_with_content_type(metadata, None, default_content_type, source.filename())
+    let metadata =
+        metadata_with_content_type(metadata, None, default_content_type, source.filename());
+    metadata_with_source_details(metadata, "file", Some(source.locator()))
 }
 
 /// Fill missing metadata fields with inferred values.
@@ -1096,6 +1114,20 @@ fn metadata_with_content_type(
     }
     if metadata.filename.is_none() {
         metadata.filename = filename;
+    }
+    metadata
+}
+
+fn metadata_with_source_details(
+    mut metadata: RecordMetadata,
+    source_type: &str,
+    locator: Option<String>,
+) -> RecordMetadata {
+    if metadata.source_details.is_none() {
+        metadata.source_details = Some(SourceDetails {
+            source_type: source_type.to_string(),
+            locator,
+        });
     }
     metadata
 }
