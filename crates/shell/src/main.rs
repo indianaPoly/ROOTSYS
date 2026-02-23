@@ -6,13 +6,16 @@ use clap::Parser;
 use clap::ValueEnum;
 use common::PayloadFormat;
 use drivers::{
-    ApiKeyAuthConfig, ApiKeyLocation, BinaryFileDriver, DbConfig, DbDriver, DbKind, ExternalSystem,
-    InputSource, JsonlDriver, OAuth2ClientCredentialsAuthConfig, RestConfig, RestDriver,
-    TextLineDriver,
+    ApiKeyAuthConfig, ApiKeyLocation, BinaryFileDriver,
+    CursorPaginationConfig as DriverCursorPaginationConfig, DbConfig, DbDriver, DbKind,
+    ExternalSystem, InputSource, JsonlDriver, OAuth2ClientCredentialsAuthConfig, RestConfig,
+    RestDriver, RestPaginationConfig as DriverRestPaginationConfig,
+    RestPaginationKind as DriverRestPaginationKind, TextLineDriver,
 };
 use runtime::{
     ApiKeyLocation as RuntimeApiKeyLocation, ContractRegistry, DbKind as RuntimeDbKind, DriverKind,
     ExternalInterface, IntegrationPipeline, RestAuthKind,
+    RestPaginationKind as RuntimeRestPaginationKind,
 };
 
 #[derive(Debug, Parser)]
@@ -200,6 +203,24 @@ fn rest_config_from_interface(
                         scope: oauth2.scope.clone(),
                     }
                 })
+            } else {
+                None
+            }
+        }),
+        pagination: rest.pagination.as_ref().and_then(|pagination| {
+            if pagination.kind == RuntimeRestPaginationKind::Cursor {
+                pagination
+                    .cursor
+                    .as_ref()
+                    .map(|cursor| DriverRestPaginationConfig {
+                        kind: DriverRestPaginationKind::Cursor,
+                        cursor: Some(DriverCursorPaginationConfig {
+                            cursor_param: cursor.cursor_param.clone(),
+                            cursor_path: cursor.cursor_path.clone(),
+                            initial_cursor: cursor.initial_cursor.clone(),
+                            max_pages: cursor.max_pages,
+                        }),
+                    })
             } else {
                 None
             }

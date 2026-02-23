@@ -241,6 +241,35 @@ pub struct RestDriverConfig {
     pub items_pointer: Option<String>,
     #[serde(default)]
     pub auth: Option<RestAuthConfig>,
+    #[serde(default)]
+    pub pagination: Option<RestPaginationConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RestPaginationConfig {
+    #[serde(default)]
+    pub kind: RestPaginationKind,
+    #[serde(default)]
+    pub cursor: Option<CursorPaginationConfig>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RestPaginationKind {
+    #[default]
+    Cursor,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CursorPaginationConfig {
+    pub cursor_param: String,
+    pub cursor_path: String,
+    #[serde(default)]
+    pub initial_cursor: Option<String>,
+    #[serde(default)]
+    pub max_pages: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -505,6 +534,69 @@ impl ExternalInterface {
                                             code: "REST_AUTH_OAUTH2_HEADER_CONFLICT".to_string(),
                                             path: "/driver/rest/headers".to_string(),
                                             message: "header 'Authorization' conflicts with oauth2 bearer token injection"
+                                                .to_string(),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some(pagination) = &rest.pagination {
+                        match pagination.kind {
+                            RestPaginationKind::Cursor => {
+                                if pagination.cursor.is_none() {
+                                    errors.push(ValidationError {
+                                        code: "REST_PAGINATION_CURSOR_REQUIRED".to_string(),
+                                        path: "/driver/rest/pagination/cursor".to_string(),
+                                        message: "cursor config is required when pagination.kind is 'cursor'"
+                                            .to_string(),
+                                    });
+                                }
+
+                                if let Some(cursor) = &pagination.cursor {
+                                    if cursor.cursor_param.trim().is_empty() {
+                                        errors.push(ValidationError {
+                                            code: "REST_PAGINATION_CURSOR_PARAM_EMPTY".to_string(),
+                                            path: "/driver/rest/pagination/cursor/cursor_param"
+                                                .to_string(),
+                                            message: "cursor_param must be a non-empty string"
+                                                .to_string(),
+                                        });
+                                    }
+
+                                    if let Err(message) = validate_json_pointer(&cursor.cursor_path)
+                                    {
+                                        errors.push(ValidationError {
+                                            code: "REST_PAGINATION_CURSOR_PATH_INVALID".to_string(),
+                                            path: "/driver/rest/pagination/cursor/cursor_path"
+                                                .to_string(),
+                                            message: message.to_string(),
+                                        });
+                                    }
+
+                                    if let Some(max_pages) = cursor.max_pages {
+                                        if max_pages == 0 {
+                                            errors.push(ValidationError {
+                                                code: "REST_PAGINATION_MAX_PAGES_INVALID"
+                                                    .to_string(),
+                                                path: "/driver/rest/pagination/cursor/max_pages"
+                                                    .to_string(),
+                                                message: "max_pages must be > 0 when provided"
+                                                    .to_string(),
+                                            });
+                                        }
+                                    }
+                                }
+
+                                if let Some(response_format) = rest.response_format {
+                                    if response_format != PayloadFormat::Json
+                                        && response_format != PayloadFormat::Unknown
+                                    {
+                                        errors.push(ValidationError {
+                                            code: "REST_PAGINATION_REQUIRES_JSON_RESPONSE".to_string(),
+                                            path: "/driver/rest/response_format".to_string(),
+                                            message: "cursor pagination requires response_format 'json' or 'unknown'"
                                                 .to_string(),
                                         });
                                     }
@@ -1119,6 +1211,83 @@ mod tests {
         assert!(has_code(&errors, "REST_AUTH_OAUTH2_TOKEN_URL_EMPTY"));
         assert!(has_code(&errors, "REST_AUTH_OAUTH2_CLIENT_ID_EMPTY"));
         assert!(has_code(&errors, "REST_AUTH_OAUTH2_CLIENT_SECRET_EMPTY"));
+    }
+
+    #[test]
+    fn errors_when_cursor_pagination_missing_cursor_config() {
+        let json = r#"{
+            "name": "rest-paging",
+            "version": "v1",
+            "driver": {
+                "kind": "rest",
+                "rest": {
+                    "url": "https://api.example.com/events",
+                    "pagination": {
+                        "kind": "cursor"
+                    }
+                }
+            }
+        }"#;
+
+        let interface: ExternalInterface = serde_json::from_str(json).unwrap();
+        let errors = interface.validate().unwrap_err();
+        assert!(has_code(&errors, "REST_PAGINATION_CURSOR_REQUIRED"));
+    }
+
+    #[test]
+    fn errors_when_cursor_pagination_has_invalid_fields() {
+        let json = r#"{
+            "name": "rest-paging",
+            "version": "v1",
+            "driver": {
+                "kind": "rest",
+                "rest": {
+                    "url": "https://api.example.com/events",
+                    "response_format": "text",
+                    "pagination": {
+                        "kind": "cursor",
+                        "cursor": {
+                            "cursor_param": "",
+                            "cursor_path": "next_cursor",
+                            "max_pages": 0
+                        }
+                    }
+                }
+            }
+        }"#;
+
+        let interface: ExternalInterface = serde_json::from_str(json).unwrap();
+        let errors = interface.validate().unwrap_err();
+        assert!(has_code(&errors, "REST_PAGINATION_CURSOR_PARAM_EMPTY"));
+        assert!(has_code(&errors, "REST_PAGINATION_CURSOR_PATH_INVALID"));
+        assert!(has_code(&errors, "REST_PAGINATION_MAX_PAGES_INVALID"));
+        assert!(has_code(&errors, "REST_PAGINATION_REQUIRES_JSON_RESPONSE"));
+    }
+
+    #[test]
+    fn cursor_pagination_valid_config_passes_validation() {
+        let json = r#"{
+            "name": "rest-paging",
+            "version": "v1",
+            "driver": {
+                "kind": "rest",
+                "rest": {
+                    "url": "https://api.example.com/events",
+                    "response_format": "json",
+                    "pagination": {
+                        "kind": "cursor",
+                        "cursor": {
+                            "cursor_param": "cursor",
+                            "cursor_path": "/next_cursor",
+                            "max_pages": 100
+                        }
+                    }
+                }
+            }
+        }"#;
+
+        let interface: ExternalInterface = serde_json::from_str(json).unwrap();
+        interface.validate().unwrap();
     }
 
     #[test]

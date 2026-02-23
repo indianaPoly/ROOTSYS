@@ -215,6 +215,7 @@ pub struct RestConfig {
     pub items_pointer: Option<String>,
     pub api_key_auth: Option<ApiKeyAuthConfig>,
     pub oauth2_auth: Option<OAuth2ClientCredentialsAuthConfig>,
+    pub pagination: Option<RestPaginationConfig>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -236,6 +237,25 @@ pub struct OAuth2ClientCredentialsAuthConfig {
     pub client_id: String,
     pub client_secret: String,
     pub scope: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RestPaginationConfig {
+    pub kind: RestPaginationKind,
+    pub cursor: Option<CursorPaginationConfig>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestPaginationKind {
+    Cursor,
+}
+
+#[derive(Debug, Clone)]
+pub struct CursorPaginationConfig {
+    pub cursor_param: String,
+    pub cursor_path: String,
+    pub initial_cursor: Option<String>,
+    pub max_pages: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -333,6 +353,49 @@ impl ExternalSystem for RestDriver {
             ureq::Agent::new()
         };
 
+        if let Some(pagination) = self.config.pagination.clone() {
+            match pagination.kind {
+                RestPaginationKind::Cursor => {
+                    return self.fetch_cursor_paginated(&agent, &pagination);
+                }
+            }
+        }
+
+        let (bytes, content_type) = self.execute_rest_call(&agent, None)?;
+
+        let metadata = metadata_with_content_type(
+            self.metadata.clone(),
+            content_type.clone(),
+            "application/octet-stream",
+            None,
+        );
+
+        let response_format = match self.config.response_format {
+            PayloadFormat::Unknown => infer_format(&bytes, content_type.as_deref()),
+            other => other,
+        };
+
+        match response_format {
+            PayloadFormat::Json => {
+                let value: serde_json::Value = serde_json::from_slice(&bytes)
+                    .map_err(|err| DriverError::InvalidResponse(err.to_string()))?;
+                json_value_to_records(&value, &metadata, &self.config)
+            }
+            PayloadFormat::Text => text_bytes_to_records(&bytes, &metadata),
+            PayloadFormat::Binary | PayloadFormat::Unknown => Ok(vec![ExternalRecord {
+                payload: Payload::from_bytes(bytes),
+                metadata,
+            }]),
+        }
+    }
+}
+
+impl RestDriver {
+    fn execute_rest_call(
+        &mut self,
+        agent: &ureq::Agent,
+        cursor_query: Option<(&str, &str)>,
+    ) -> Result<(Vec<u8>, Option<String>), DriverError> {
         let method = self
             .config
             .method
@@ -341,8 +404,12 @@ impl ExternalSystem for RestDriver {
 
         let mut request = agent.request(&method, &self.config.url);
 
+        if let Some((name, value)) = cursor_query {
+            request = request.query(name, value);
+        }
+
         if let Some(oauth2) = self.config.oauth2_auth.clone() {
-            let bearer = self.get_bearer_token(&agent, &oauth2)?;
+            let bearer = self.get_bearer_token(agent, &oauth2)?;
             request = request.set("Authorization", &format!("Bearer {bearer}"));
         }
 
@@ -381,26 +448,77 @@ impl ExternalSystem for RestDriver {
         let mut bytes = Vec::new();
         response.into_reader().read_to_end(&mut bytes)?;
 
-        let metadata = metadata_with_content_type(
-            self.metadata.clone(),
-            content_type.clone(),
-            "application/octet-stream",
-            None,
-        );
+        Ok((bytes, content_type))
+    }
 
-        let response_format = match self.config.response_format {
-            PayloadFormat::Unknown => infer_format(&bytes, content_type.as_deref()),
-            other => other,
-        };
+    fn fetch_cursor_paginated(
+        &mut self,
+        agent: &ureq::Agent,
+        pagination: &RestPaginationConfig,
+    ) -> Result<Vec<ExternalRecord>, DriverError> {
+        let cursor = pagination.cursor.as_ref().ok_or_else(|| {
+            DriverError::InvalidResponse("cursor pagination config is missing".to_string())
+        })?;
 
-        match response_format {
-            PayloadFormat::Json => json_bytes_to_records(&bytes, &metadata, &self.config),
-            PayloadFormat::Text => text_bytes_to_records(&bytes, &metadata),
-            PayloadFormat::Binary | PayloadFormat::Unknown => Ok(vec![ExternalRecord {
-                payload: Payload::from_bytes(bytes),
-                metadata,
-            }]),
+        let mut records = Vec::new();
+        let mut next_cursor = cursor.initial_cursor.clone();
+        let mut pages = 0u32;
+
+        loop {
+            if let Some(max_pages) = cursor.max_pages {
+                if pages >= max_pages {
+                    break;
+                }
+            }
+
+            let query = next_cursor
+                .as_ref()
+                .map(|value| (cursor.cursor_param.as_str(), value.as_str()));
+            let (bytes, content_type) = self.execute_rest_call(agent, query)?;
+            let metadata = metadata_with_content_type(
+                self.metadata.clone(),
+                content_type.clone(),
+                "application/octet-stream",
+                None,
+            );
+
+            let response_format = match self.config.response_format {
+                PayloadFormat::Unknown => infer_format(&bytes, content_type.as_deref()),
+                other => other,
+            };
+
+            if response_format != PayloadFormat::Json {
+                return Err(DriverError::InvalidResponse(
+                    "cursor pagination requires json responses".to_string(),
+                ));
+            }
+
+            let value: serde_json::Value = serde_json::from_slice(&bytes)
+                .map_err(|err| DriverError::InvalidResponse(err.to_string()))?;
+            records.extend(json_value_to_records(&value, &metadata, &self.config)?);
+
+            pages += 1;
+
+            let extracted = value.pointer(&cursor.cursor_path);
+            let parsed_next = match extracted {
+                Some(serde_json::Value::String(value)) if !value.is_empty() => Some(value.clone()),
+                Some(serde_json::Value::Number(value)) => Some(value.to_string()),
+                Some(serde_json::Value::Bool(value)) => Some(value.to_string()),
+                _ => None,
+            };
+
+            match parsed_next {
+                Some(new_cursor) => {
+                    if next_cursor.as_ref() == Some(&new_cursor) {
+                        break;
+                    }
+                    next_cursor = Some(new_cursor);
+                }
+                None => break,
+            }
         }
+
+        Ok(records)
     }
 }
 
@@ -699,14 +817,11 @@ fn option_string_to_json(value: Option<String>) -> serde_json::Value {
 }
 
 /// Convert JSON response bytes to external records (array or single object).
-fn json_bytes_to_records(
-    bytes: &[u8],
+fn json_value_to_records(
+    value: &serde_json::Value,
     metadata: &RecordMetadata,
     config: &RestConfig,
 ) -> Result<Vec<ExternalRecord>, DriverError> {
-    let value: serde_json::Value = serde_json::from_slice(bytes)
-        .map_err(|err| DriverError::InvalidResponse(err.to_string()))?;
-
     let target = if let Some(pointer) = &config.items_pointer {
         value.pointer(pointer).ok_or_else(|| {
             DriverError::InvalidResponse(format!("json pointer not found: {pointer}"))
