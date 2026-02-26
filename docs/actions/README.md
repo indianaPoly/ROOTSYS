@@ -11,3 +11,4 @@ Entry point for docs/actions.
 - `docs/WHITE_PAPER.md`: action/policy/audit layer reference.
 - `docs/actions/action_schema_specs_b7_1.md`: B7-1 action schema specification.
 - `docs/actions/permission_policy_model_b7_2.md`: B7-2 permission/policy model.
+- `docs/actions/audit_log_model_b7_3.md`: B7-3 audit requirements and storage/query model.
