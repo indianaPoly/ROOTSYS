@@ -9,3 +9,4 @@ Entry point for docs/actions.
 ## Contents
 - `docs/ROADMAP_TODOS.md`: B7 roadmap tasks.
 - `docs/WHITE_PAPER.md`: action/policy/audit layer reference.
+- `docs/actions/action_schema_specs_b7_1.md`: B7-1 action schema specification.
