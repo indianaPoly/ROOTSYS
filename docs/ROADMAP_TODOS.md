@@ -75,7 +75,7 @@ Use it as the source of truth for priorities, and mirror each item into GitHub I
 
 ## B7. Action / Policy / Audit
 - [x] Roadmap(B7-1): Define Action schemas (confirmLink/rejectLink/addEvidenceToLink)
-- [ ] Roadmap(B7-2): Define permission/policy model (who can do what)
+- [x] Roadmap(B7-2): Define permission/policy model (who can do what)
 - [ ] Roadmap(B7-3): Define audit log requirements + storage/query model
 
 ## B8. UI/App (CAPA App)
