@@ -68,7 +68,7 @@ Use it as the source of truth for priorities, and mirror each item into GitHub I
 ---
 
 ## B6. Ontology Layer (Defect/Cause/Evidence)
-- [ ] Roadmap(B6-1): Define object/link type specs (Defect/Cause/Evidence/CompositeCause)
+- [x] Roadmap(B6-1): Define object/link type specs (Defect/Cause/Evidence/CompositeCause)
 - [ ] Roadmap(B6-2): Define R1 deterministic linking rules + pipeline plan
 - [ ] Roadmap(B6-3): Define R2 probabilistic candidate links + confidence schema
 - [ ] Roadmap(B6-4): Define R3 human-in-the-loop confirmation state machine
