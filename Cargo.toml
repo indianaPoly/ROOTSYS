@@ -4,6 +4,7 @@ members = [
   "crates/common",
   "crates/drivers",
   "crates/fabric",
+  "crates/linkage",
   "crates/ontology",
   "crates/runtime",
   "crates/shell",
