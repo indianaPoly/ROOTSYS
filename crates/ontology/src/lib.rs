@@ -1,5 +1,6 @@
-use common::IntegrationRecord;
+use common::{IntegrationRecord, Payload};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,10 +25,12 @@ pub struct OntologyObject {
     pub object_id: String,
     pub object_type: OntologyObjectType,
     pub lineage: OntologyLineage,
+    pub attributes: Value,
 }
 
 pub trait OntologyMaterializer {
     fn materialize(&self, record: &IntegrationRecord) -> Vec<OntologyObject>;
+    fn materialize_jsonl_lines(&self, record: &IntegrationRecord) -> Vec<String>;
 }
 
 #[derive(Debug, Clone, Default)]
@@ -70,18 +73,106 @@ impl BasicOntologyMaterializer {
             object_id: Self::object_id(record, object_type),
             object_type,
             lineage: Self::lineage(record),
+            attributes: Self::extract_attributes(record, object_type),
         }
+    }
+
+    fn payload_json(record: &IntegrationRecord) -> Option<&Map<String, Value>> {
+        match &record.payload {
+            Payload::Json(Value::Object(object)) => Some(object),
+            _ => None,
+        }
+    }
+
+    fn detect_types(record: &IntegrationRecord) -> Vec<OntologyObjectType> {
+        let mut object_types = Vec::new();
+
+        if let Some(payload) = Self::payload_json(record) {
+            if has_any_key(payload, DEFECT_KEYS) {
+                object_types.push(OntologyObjectType::Defect);
+            }
+            if has_any_key(payload, CAUSE_KEYS) {
+                object_types.push(OntologyObjectType::Cause);
+            }
+            if has_any_key(payload, EVIDENCE_KEYS) {
+                object_types.push(OntologyObjectType::Evidence);
+            }
+        }
+
+        if object_types.is_empty() {
+            object_types.push(OntologyObjectType::Defect);
+        }
+
+        object_types
+    }
+
+    fn extract_attributes(record: &IntegrationRecord, object_type: OntologyObjectType) -> Value {
+        let mut attributes = Map::new();
+        attributes.insert(
+            "source_record_id".to_string(),
+            Value::String(record.record_id.clone()),
+        );
+        attributes.insert(
+            "source_interface".to_string(),
+            Value::String(format!(
+                "{}:{}",
+                record.interface.name, record.interface.version
+            )),
+        );
+
+        if let Some(payload) = Self::payload_json(record) {
+            let selected_keys = match object_type {
+                OntologyObjectType::Defect => DEFECT_KEYS,
+                OntologyObjectType::Cause => CAUSE_KEYS,
+                OntologyObjectType::Evidence => EVIDENCE_KEYS,
+            };
+
+            for key in selected_keys {
+                if let Some(value) = payload.get(*key) {
+                    attributes.insert((*key).to_string(), value.clone());
+                }
+            }
+        }
+
+        Value::Object(attributes)
     }
 }
 
 impl OntologyMaterializer for BasicOntologyMaterializer {
     fn materialize(&self, record: &IntegrationRecord) -> Vec<OntologyObject> {
-        vec![Self::to_object(record, OntologyObjectType::Defect)]
+        Self::detect_types(record)
+            .into_iter()
+            .map(|object_type| Self::to_object(record, object_type))
+            .collect()
     }
+
+    fn materialize_jsonl_lines(&self, record: &IntegrationRecord) -> Vec<String> {
+        self.materialize(record)
+            .into_iter()
+            .filter_map(|object| serde_json::to_string(&object).ok())
+            .collect()
+    }
+}
+
+const DEFECT_KEYS: &[&str] = &["defect_id", "defect_code", "lot_id", "line", "equipment_id"];
+const CAUSE_KEYS: &[&str] = &["cause_id", "cause_code", "cause", "category", "confidence"];
+const EVIDENCE_KEYS: &[&str] = &[
+    "evidence_id",
+    "evidence_type",
+    "evidence_url",
+    "evidence_path",
+    "captured_at",
+];
+
+fn has_any_key(object: &Map<String, Value>, keys: &[&str]) -> bool {
+    keys.iter().any(|key| object.contains_key(*key))
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+
     use common::{IntegrationRecord, InterfaceRef, Payload, RecordMetadata};
 
     use super::{BasicOntologyMaterializer, OntologyMaterializer, OntologyObjectType};
@@ -129,5 +220,68 @@ mod tests {
         assert_eq!(objects[0].object_type, OntologyObjectType::Defect);
         assert_eq!(objects[0].lineage.source, "mes");
         assert_eq!(objects[0].lineage.record_id, "defect-001");
+    }
+
+    #[test]
+    fn fixture_records_materialize_to_expected_type_distribution() {
+        let materializer = BasicOntologyMaterializer;
+        let records = load_fixture_records("materialization.input.jsonl");
+
+        let mut defect_count = 0usize;
+        let mut cause_count = 0usize;
+        let mut evidence_count = 0usize;
+
+        for record in &records {
+            for object in materializer.materialize(record) {
+                match object.object_type {
+                    OntologyObjectType::Defect => defect_count += 1,
+                    OntologyObjectType::Cause => cause_count += 1,
+                    OntologyObjectType::Evidence => evidence_count += 1,
+                }
+            }
+        }
+
+        assert_eq!(defect_count, 3);
+        assert_eq!(cause_count, 1);
+        assert_eq!(evidence_count, 1);
+    }
+
+    #[test]
+    fn materialized_jsonl_lines_are_valid_and_include_attributes() {
+        let materializer = BasicOntologyMaterializer;
+        let records = load_fixture_records("materialization.input.jsonl");
+
+        let lines = materializer.materialize_jsonl_lines(&records[1]);
+        assert_eq!(lines.len(), 2);
+
+        for line in lines {
+            let parsed: serde_json::Value =
+                serde_json::from_str(&line).expect("materialized JSONL line should parse");
+            assert!(parsed.get("object_id").is_some());
+            assert!(parsed.get("object_type").is_some());
+            assert!(parsed.get("lineage").is_some());
+            assert!(parsed.get("attributes").is_some());
+        }
+    }
+
+    fn load_fixture_records(file_name: &str) -> Vec<IntegrationRecord> {
+        let fixture_path = fixture_file_path(file_name);
+        let content = fs::read_to_string(&fixture_path)
+            .unwrap_or_else(|_| panic!("failed to read fixture file: {}", fixture_path.display()));
+
+        content
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                serde_json::from_str::<IntegrationRecord>(line)
+                    .expect("fixture line must parse as IntegrationRecord")
+            })
+            .collect()
+    }
+
+    fn fixture_file_path(file_name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/ontology")
+            .join(file_name)
     }
 }

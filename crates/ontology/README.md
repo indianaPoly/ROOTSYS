@@ -7,5 +7,6 @@ Entry point for crates/ontology.
 - Owner: repository maintainers (`@indianaPoly`).
 
 ## Contents
-- `crates/ontology/src/lib.rs`: MVP ontology object model and materializer trait/implementation.
+- `crates/ontology/src/lib.rs`: object materialization logic (Defect/Cause/Evidence) and JSONL serialization helper.
+- `tests/fixtures/ontology/materialization.input.jsonl`: fixture records for ontology materialization tests.
 - `docs/architecture/mvp_roadmap_c_track.md`: C-track ontology implementation roadmap.
