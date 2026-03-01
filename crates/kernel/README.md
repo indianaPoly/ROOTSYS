@@ -10,4 +10,5 @@ Entry point for crates/kernel.
 - `crates/kernel/src/lib.rs`: action request/command/result models and MVP command handler.
 - Includes validation/error handling for invalid action payloads across confirm/reject/add-evidence commands.
 - Includes role policy checks (`reviewer`, `operator`, `admin`) before action execution.
+- Includes append-only SQLite audit backend and query model (`AuditLogStore`, `SqliteAuditLogStore`, `AuditQuery`).
 - `docs/architecture/mvp_roadmap_c_track.md`: C-track action/policy/audit roadmap.
