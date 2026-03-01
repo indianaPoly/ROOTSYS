@@ -150,6 +150,16 @@ npm run dev
 
 Open `http://localhost:3000` to view artifact status from `/tmp/rootsys-smoke` and `/tmp/rootsys-complex` outputs.
 
+### One-shot full execution (all checks + UI verify)
+```bash
+bash scripts/run_all_checks_and_prepare_ui.sh
+```
+
+Optional: automatically start Next.js dev server after all checks:
+```bash
+ROOTSYS_RUN_UI_DEV=1 bash scripts/run_all_checks_and_prepare_ui.sh
+```
+
 ### DLQ sink options
 - File sink (default):
   - `--dlq-sink file`
