@@ -110,6 +110,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dlq_sink = build_dlq_sink(&args);
     let mut total_records = 0usize;
     let mut total_dead_letters = 0usize;
+    let mut metrics = PipelineMetrics::default();
 
     for run_idx in 0..schedule.max_runs {
         let metadata = metadata_from_interface(&interface);
@@ -119,6 +120,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut driver = build_external_driver(&args, &interface, driver_kind, metadata)?;
             driver.fetch()?
         };
+
+        let input_records = records.len();
+        metrics.input_records_total += input_records;
 
         let pipeline = IntegrationPipeline::new(interface.clone());
         let outcome = pipeline.integrate(&source, records);
@@ -132,6 +136,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         total_records += outcome.records.len();
         total_dead_letters += outcome.dead_letters.len();
+        metrics.integration_records_total += outcome.records.len();
+        metrics.dlq_records_total += outcome.dead_letters.len();
+        metrics.runs_total += 1;
+
+        emit_structured_log(
+            "run_summary",
+            serde_json::json!({
+                "run_index": run_idx + 1,
+                "source": source,
+                "input_records": input_records,
+                "integration_records": outcome.records.len(),
+                "dlq_records": outcome.dead_letters.len()
+            }),
+        );
 
         println!(
             "run {}: records={} | dead_letters={}",
@@ -152,7 +170,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         schedule.max_runs, total_records, total_dead_letters
     );
 
+    emit_structured_log(
+        "pipeline_metrics",
+        serde_json::json!({
+            "runs_total": metrics.runs_total,
+            "input_records_total": metrics.input_records_total,
+            "integration_records_total": metrics.integration_records_total,
+            "dlq_records_total": metrics.dlq_records_total
+        }),
+    );
+
     Ok(())
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct PipelineMetrics {
+    runs_total: usize,
+    input_records_total: usize,
+    integration_records_total: usize,
+    dlq_records_total: usize,
+}
+
+fn emit_structured_log(event: &str, payload: serde_json::Value) {
+    let line = serde_json::json!({
+        "event": event,
+        "ts_unix_ms": now_unix_ms(),
+        "payload": payload
+    });
+
+    println!("{}", line);
+}
+
+fn now_unix_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or_default()
 }
 
 fn resolve_schedule(args: &Args) -> Result<ResolvedSchedule, Box<dyn Error>> {
