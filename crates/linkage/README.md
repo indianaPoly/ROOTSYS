@@ -8,4 +8,5 @@ Entry point for crates/linkage.
 
 ## Contents
 - `crates/linkage/src/lib.rs`: link seed model, strong-key deterministic R1 generator, and configurable lightweight R2 (time-window + shared-attribute) candidate generator.
+- Candidate link schema fields include `confidence`, `reasons`, and `lineage` with schema validation helpers.
 - `docs/architecture/mvp_roadmap_c_track.md`: C-track linkage implementation roadmap.

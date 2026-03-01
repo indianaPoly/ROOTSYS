@@ -45,9 +45,41 @@ pub struct DeterministicLink {
 pub struct CandidateLink {
     pub link_id: String,
     pub relation: String,
-    pub score: f32,
+    pub confidence: f32,
     pub reasons: Vec<String>,
     pub lineage: LinkLineage,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CandidateSchemaError {
+    MissingLinkId,
+    MissingRelation,
+    InvalidConfidence,
+    EmptyReasons,
+    MissingLineageRecordIds,
+}
+
+impl CandidateLink {
+    pub fn validate_schema(&self) -> Result<(), CandidateSchemaError> {
+        if self.link_id.trim().is_empty() {
+            return Err(CandidateSchemaError::MissingLinkId);
+        }
+        if self.relation.trim().is_empty() {
+            return Err(CandidateSchemaError::MissingRelation);
+        }
+        if !(0.0..=1.0).contains(&self.confidence) {
+            return Err(CandidateSchemaError::InvalidConfidence);
+        }
+        if self.reasons.is_empty() {
+            return Err(CandidateSchemaError::EmptyReasons);
+        }
+        if self.lineage.left_record_id.trim().is_empty()
+            || self.lineage.right_record_id.trim().is_empty()
+        {
+            return Err(CandidateSchemaError::MissingLineageRecordIds);
+        }
+        Ok(())
+    }
 }
 
 pub trait DeterministicLinkGenerator {
@@ -237,7 +269,7 @@ impl ProbabilisticLinkGenerator for PrefixSimilarityProbabilisticGenerator {
                         score,
                     ),
                     relation: self.relation.clone(),
-                    score,
+                    confidence: score,
                     reasons: vec![reason],
                     lineage: LinkLineage {
                         left_record_id: seed.left_record_id.clone(),
@@ -313,7 +345,7 @@ impl ProbabilisticLinkGenerator for LightweightR2ProbabilisticGenerator {
                         score,
                     ),
                     relation: self.relation.clone(),
-                    score,
+                    confidence: score,
                     reasons: vec![reason],
                     lineage: LinkLineage {
                         left_record_id: seed.left_record_id.clone(),
@@ -388,9 +420,11 @@ const STRONG_KEY_PRIORITY: &[&str] = &["defect_id", "lot_id", "equipment_id", "c
 #[cfg(test)]
 mod tests {
     use super::{
-        DeterministicLinkGenerator, ExactRecordIdDeterministicGenerator, LightweightR2Config,
-        LightweightR2ProbabilisticGenerator, LinkSeed, PrefixSimilarityProbabilisticGenerator,
-        ProbabilisticLinkGenerator, StrongKeyDeterministicGenerator,
+        CandidateLink, CandidateSchemaError, DeterministicLinkGenerator,
+        ExactRecordIdDeterministicGenerator, LightweightR2Config,
+        LightweightR2ProbabilisticGenerator, LinkLineage, LinkSeed,
+        PrefixSimilarityProbabilisticGenerator, ProbabilisticLinkGenerator,
+        StrongKeyDeterministicGenerator,
     };
 
     fn seed(left_record_id: &str, right_record_id: &str) -> LinkSeed {
@@ -448,7 +482,7 @@ mod tests {
         let candidates = generator.generate_candidates(&seeds);
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].relation, "candidate_of");
-        assert!(candidates[0].score >= 0.6);
+        assert!(candidates[0].confidence >= 0.6);
         assert_eq!(candidates[0].lineage.left_record_id, "defect-100");
         assert_eq!(candidates[0].lineage.right_record_id, "defect-199");
     }
@@ -546,7 +580,7 @@ mod tests {
         let candidates = generator.generate_candidates(&[candidate_seed]);
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].relation, "candidate_of");
-        assert!(candidates[0].score >= 0.5);
+        assert!(candidates[0].confidence >= 0.5);
         assert!(candidates[0].reasons[0].contains("matched_keys=lot_id+line"));
     }
 
@@ -591,5 +625,44 @@ mod tests {
 
         let candidates = generator.generate_candidates(&[candidate_seed]);
         assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn candidate_schema_validation_accepts_required_fields() {
+        let candidate = CandidateLink {
+            link_id: "candidate-link-1".to_string(),
+            relation: "candidate_of".to_string(),
+            confidence: 0.77,
+            reasons: vec!["matched lot_id".to_string()],
+            lineage: LinkLineage {
+                left_record_id: "left-1".to_string(),
+                right_record_id: "right-1".to_string(),
+                left_source: "mes".to_string(),
+                right_source: "qms".to_string(),
+            },
+        };
+
+        assert_eq!(candidate.validate_schema(), Ok(()));
+    }
+
+    #[test]
+    fn candidate_schema_validation_rejects_invalid_confidence() {
+        let candidate = CandidateLink {
+            link_id: "candidate-link-2".to_string(),
+            relation: "candidate_of".to_string(),
+            confidence: 1.2,
+            reasons: vec!["matched lot_id".to_string()],
+            lineage: LinkLineage {
+                left_record_id: "left-1".to_string(),
+                right_record_id: "right-1".to_string(),
+                left_source: "mes".to_string(),
+                right_source: "qms".to_string(),
+            },
+        };
+
+        assert_eq!(
+            candidate.validate_schema(),
+            Err(CandidateSchemaError::InvalidConfidence)
+        );
     }
 }
