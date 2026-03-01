@@ -4,14 +4,19 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_DIR="${ROOTSYS_COMPLEX_OUT_DIR:-/tmp/rootsys-complex}"
-CONTRACT_REGISTRY="$ROOT_DIR/system/contracts/reference/allowlist.json"
+
+source "$ROOT_DIR/scripts/lib/company_config.sh"
+load_company_config "$ROOT_DIR"
+validate_company_config
+
+CONTRACT_REGISTRY="$ROOTSYS_CONTRACT_REGISTRY"
 
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
 
 echo "[1/6] Interval schedule run (stream fixture, 2 cycles)"
 cargo run -p shell -- \
-  --interface "$ROOT_DIR/tests/fixtures/interfaces/stream.kafka.sample.json" \
+  --interface "$ROOTSYS_INTERFACE_STREAM" \
   --contract-registry "$CONTRACT_REGISTRY" \
   --output "$OUT_DIR/stream.interval.output.jsonl" \
   --schedule-mode interval \
@@ -32,7 +37,7 @@ PY
 echo "[2/6] Product-flow execution and artifact checks"
 PRODUCT_DIR="$OUT_DIR/product-flow"
 cargo run -p shell -- \
-  --interface "$ROOT_DIR/tests/fixtures/interfaces/mes.db.json" \
+  --interface "$ROOTSYS_INTERFACE_MES" \
   --contract-registry "$CONTRACT_REGISTRY" \
   --output "$OUT_DIR/mes.product.base.output.jsonl" \
   --enable-product-flow \
@@ -74,8 +79,8 @@ EOF
 
 cat > "$REPLAY_DIR/strict.interface.json" <<EOF
 {
-  "name": "mes",
-  "version": "v1",
+  "name": "${ROOTSYS_COMPLEX_REPLAY_INTERFACE_NAME}",
+  "version": "${ROOTSYS_COMPLEX_REPLAY_INTERFACE_VERSION}",
   "driver": {
     "kind": "jsonl",
     "input": "${REPLAY_DIR}/input.jsonl"
@@ -89,8 +94,8 @@ EOF
 
 cat > "$REPLAY_DIR/permissive.interface.json" <<EOF
 {
-  "name": "mes",
-  "version": "v1",
+  "name": "${ROOTSYS_COMPLEX_REPLAY_INTERFACE_NAME}",
+  "version": "${ROOTSYS_COMPLEX_REPLAY_INTERFACE_VERSION}",
   "driver": {
     "kind": "jsonl",
     "input": "${REPLAY_DIR}/input.jsonl"
@@ -120,6 +125,7 @@ cargo run -p shell -- \
 
 python3 - "$REPLAY_DIR/replay.output.jsonl" <<'PY'
 import json
+import os
 import pathlib
 import sys
 
@@ -128,7 +134,7 @@ lines = [line for line in path.read_text().splitlines() if line.strip()]
 if len(lines) != 1:
     raise SystemExit(f"expected replay to recover 1 record, got {len(lines)}")
 record = json.loads(lines[0])
-if record.get("source") != "mes":
+if record.get("source") != os.environ["ROOTSYS_COMPLEX_REPLAY_INTERFACE_NAME"]:
     raise SystemExit(f"unexpected replay source: {record.get('source')}")
 print("sqlite replay assertion passed")
 PY

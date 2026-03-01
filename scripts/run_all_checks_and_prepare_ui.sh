@@ -5,6 +5,14 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN_UI_DEV="${ROOTSYS_RUN_UI_DEV:-0}"
 
+if [[ $# -ge 1 ]]; then
+  export ROOTSYS_COMPANY_PROFILE="$1"
+fi
+
+source "$ROOT_DIR/scripts/lib/company_config.sh"
+load_company_config "$ROOT_DIR"
+validate_company_config
+
 ensure_command() {
   local name="$1"
   if ! command -v "$name" >/dev/null 2>&1; then
@@ -27,6 +35,12 @@ ensure_command python3
 ensure_command npm
 ensure_docker_ready
 
+if [[ -n "$ROOTSYS_ACTIVE_CONFIG_FILE" ]]; then
+  echo "active company config: $ROOTSYS_ACTIVE_CONFIG_FILE"
+else
+  echo "active company config: defaults (no profile file found)"
+fi
+
 echo "[2/8] rust quality gates (fmt/check/test/build)"
 cargo fmt --check
 cargo check
@@ -40,7 +54,7 @@ echo "[4/8] complex pipeline checks"
 bash "$ROOT_DIR/scripts/run_complex_pipeline_checks.sh"
 
 echo "[5/8] install frontend dependencies"
-cd "$ROOT_DIR/ui"
+cd "$ROOTSYS_UI_DIR"
 npm install --cache .npm-cache
 
 echo "[6/8] frontend typecheck"

@@ -8,6 +8,10 @@ COMPOSE_FILE="$ROOT_DIR/scripts/smoke/docker-compose.yml"
 REST_PORT="${ROOTSYS_SMOKE_REST_PORT:-18080}"
 REST_PID=""
 
+source "$ROOT_DIR/scripts/lib/company_config.sh"
+load_company_config "$ROOT_DIR"
+validate_company_config
+
 mkdir -p "$OUT_DIR"
 
 compose() {
@@ -62,33 +66,38 @@ sleep 1
 
 echo "[4/8] Running REST smoke interface"
 cargo run -p shell -- \
-  --interface "$ROOT_DIR/tests/fixtures/interfaces/rest.smoke.json" \
-  --contract-registry "$ROOT_DIR/system/contracts/reference/allowlist.json" \
+  --interface "$ROOTSYS_INTERFACE_REST_SMOKE" \
+  --contract-registry "$ROOTSYS_CONTRACT_REGISTRY" \
   --output "$OUT_DIR/rest.output.jsonl"
 
 echo "[5/8] Running Postgres smoke interface"
 cargo run -p shell -- \
-  --interface "$ROOT_DIR/tests/fixtures/interfaces/postgres.smoke.json" \
-  --contract-registry "$ROOT_DIR/system/contracts/reference/allowlist.json" \
+  --interface "$ROOTSYS_INTERFACE_POSTGRES_SMOKE" \
+  --contract-registry "$ROOTSYS_CONTRACT_REGISTRY" \
   --output "$OUT_DIR/postgres.output.jsonl"
 
 echo "[6/8] Running MySQL smoke interface"
 cargo run -p shell -- \
-  --interface "$ROOT_DIR/tests/fixtures/interfaces/mysql.smoke.json" \
-  --contract-registry "$ROOT_DIR/system/contracts/reference/allowlist.json" \
+  --interface "$ROOTSYS_INTERFACE_MYSQL_SMOKE" \
+  --contract-registry "$ROOTSYS_CONTRACT_REGISTRY" \
   --output "$OUT_DIR/mysql.output.jsonl"
 
 echo "[7/8] Verifying exact record_id outputs"
 python3 - "$OUT_DIR" <<'PY'
 import json
+import os
 import pathlib
 import sys
 
 out_dir = pathlib.Path(sys.argv[1])
+
+def parse_ids(raw: str):
+    return [x for x in (item.strip() for item in raw.split(",")) if x]
+
 cases = {
-    "rest.output.jsonl": ["rest-1001", "rest-1002"],
-    "postgres.output.jsonl": ["PG-1001|LOT-PG-1", "PG-1002|LOT-PG-2"],
-    "mysql.output.jsonl": ["MY-1001|LOT-MY-1", "MY-1002|LOT-MY-2"],
+    "rest.output.jsonl": parse_ids(os.environ["ROOTSYS_SMOKE_EXPECT_REST_IDS"]),
+    "postgres.output.jsonl": parse_ids(os.environ["ROOTSYS_SMOKE_EXPECT_POSTGRES_IDS"]),
+    "mysql.output.jsonl": parse_ids(os.environ["ROOTSYS_SMOKE_EXPECT_MYSQL_IDS"]),
 }
 
 for name, expected in cases.items():
