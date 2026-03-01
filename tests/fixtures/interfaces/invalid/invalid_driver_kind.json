@@ -1,0 +1,12 @@
+{
+  "name": "rest-sample",
+  "version": "v1",
+  "driver": {
+    "kind": "grpc",
+    "rest": {
+      "url": "https://api.example.com/events",
+      "method": "GET"
+    }
+  },
+  "payload_format": "json"
+}

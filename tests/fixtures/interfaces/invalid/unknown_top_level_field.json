@@ -1,0 +1,14 @@
+{
+  "name": "mes",
+  "version": "v1",
+  "driver": {
+    "kind": "db",
+    "db": {
+      "kind": "sqlite",
+      "connection": "tests/fixtures/db/mes.db",
+      "query": "SELECT * FROM defect_events"
+    }
+  },
+  "payload_format": "json",
+  "extra_field": true
+}

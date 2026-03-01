@@ -1,0 +1,11 @@
+{
+  "name": "rest-sample",
+  "version": "v1",
+  "driver": {
+    "kind": "rest",
+    "rest": {
+      "method": "GET"
+    }
+  },
+  "payload_format": "json"
+}
