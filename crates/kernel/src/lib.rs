@@ -70,76 +70,62 @@ pub struct BasicActionHandler;
 
 impl ActionHandler for BasicActionHandler {
     fn handle(&self, request: ActionRequest) -> Result<ActionResult, KernelError> {
-        if request.actor.actor_id.trim().is_empty() {
-            return Err(KernelError::Validation {
-                field: "actor.actor_id",
-                message: "must be a non-empty string".to_string(),
-            });
-        }
+        validate_non_empty("actor.actor_id", &request.actor.actor_id)?;
 
         match request.command {
             ActionCommand::ConfirmLink(command) => {
-                if command.link_id.trim().is_empty() {
-                    return Err(KernelError::Validation {
-                        field: "command.confirm_link.link_id",
-                        message: "must be a non-empty string".to_string(),
-                    });
-                }
-                if command.justification.trim().is_empty() {
-                    return Err(KernelError::Validation {
-                        field: "command.confirm_link.justification",
-                        message: "must be a non-empty string".to_string(),
-                    });
-                }
+                validate_non_empty("command.confirm_link.link_id", &command.link_id)?;
+                validate_non_empty("command.confirm_link.justification", &command.justification)?;
 
                 Ok(ActionResult {
                     action_kind: ActionKind::ConfirmLink,
-                    link_id: command.link_id,
-                    summary: "link confirmed".to_string(),
+                    link_id: command.link_id.clone(),
+                    summary: format!(
+                        "link confirmed with justification: {}",
+                        command.justification
+                    ),
                 })
             }
             ActionCommand::RejectLink(command) => {
-                if command.link_id.trim().is_empty() {
-                    return Err(KernelError::Validation {
-                        field: "command.reject_link.link_id",
-                        message: "must be a non-empty string".to_string(),
-                    });
-                }
-                if command.reason.trim().is_empty() {
-                    return Err(KernelError::Validation {
-                        field: "command.reject_link.reason",
-                        message: "must be a non-empty string".to_string(),
-                    });
-                }
+                validate_non_empty("command.reject_link.link_id", &command.link_id)?;
+                validate_non_empty("command.reject_link.reason", &command.reason)?;
 
                 Ok(ActionResult {
                     action_kind: ActionKind::RejectLink,
-                    link_id: command.link_id,
-                    summary: "link rejected".to_string(),
+                    link_id: command.link_id.clone(),
+                    summary: format!("link rejected with reason: {}", command.reason),
                 })
             }
             ActionCommand::AddEvidenceToLink(command) => {
-                if command.link_id.trim().is_empty() {
-                    return Err(KernelError::Validation {
-                        field: "command.add_evidence_to_link.link_id",
-                        message: "must be a non-empty string".to_string(),
-                    });
-                }
-                if command.evidence_id.trim().is_empty() {
-                    return Err(KernelError::Validation {
-                        field: "command.add_evidence_to_link.evidence_id",
-                        message: "must be a non-empty string".to_string(),
-                    });
-                }
+                validate_non_empty("command.add_evidence_to_link.link_id", &command.link_id)?;
+                validate_non_empty(
+                    "command.add_evidence_to_link.evidence_id",
+                    &command.evidence_id,
+                )?;
+                validate_non_empty(
+                    "command.add_evidence_to_link.description",
+                    &command.description,
+                )?;
 
                 Ok(ActionResult {
                     action_kind: ActionKind::AddEvidenceToLink,
-                    link_id: command.link_id,
-                    summary: "evidence attached to link".to_string(),
+                    link_id: command.link_id.clone(),
+                    summary: format!("evidence {} attached to link", command.evidence_id),
                 })
             }
         }
     }
+}
+
+fn validate_non_empty(field: &'static str, value: &str) -> Result<(), KernelError> {
+    if value.trim().is_empty() {
+        return Err(KernelError::Validation {
+            field,
+            message: "must be a non-empty string".to_string(),
+        });
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -172,6 +158,7 @@ mod tests {
 
         assert_eq!(result.action_kind, ActionKind::ConfirmLink);
         assert_eq!(result.link_id, "link-1");
+        assert!(result.summary.contains("same defect id"));
     }
 
     #[test]
@@ -189,6 +176,7 @@ mod tests {
 
         assert_eq!(result.action_kind, ActionKind::RejectLink);
         assert_eq!(result.link_id, "link-2");
+        assert!(result.summary.contains("insufficient evidence"));
     }
 
     #[test]
@@ -207,6 +195,7 @@ mod tests {
 
         assert_eq!(result.action_kind, ActionKind::AddEvidenceToLink);
         assert_eq!(result.link_id, "link-3");
+        assert!(result.summary.contains("evidence-9"));
     }
 
     #[test]
@@ -229,6 +218,73 @@ mod tests {
             error,
             KernelError::Validation {
                 field: "actor.actor_id",
+                message: "must be a non-empty string".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_empty_confirm_justification() {
+        let handler = BasicActionHandler;
+        let error = handler
+            .handle(ActionRequest {
+                actor: actor(),
+                command: ActionCommand::ConfirmLink(ConfirmLinkCommand {
+                    link_id: "link-1".to_string(),
+                    justification: "  ".to_string(),
+                }),
+            })
+            .expect_err("empty confirmation justification should fail");
+
+        assert_eq!(
+            error,
+            KernelError::Validation {
+                field: "command.confirm_link.justification",
+                message: "must be a non-empty string".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_empty_reject_reason() {
+        let handler = BasicActionHandler;
+        let error = handler
+            .handle(ActionRequest {
+                actor: actor(),
+                command: ActionCommand::RejectLink(RejectLinkCommand {
+                    link_id: "link-2".to_string(),
+                    reason: String::new(),
+                }),
+            })
+            .expect_err("empty reject reason should fail");
+
+        assert_eq!(
+            error,
+            KernelError::Validation {
+                field: "command.reject_link.reason",
+                message: "must be a non-empty string".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_empty_evidence_description() {
+        let handler = BasicActionHandler;
+        let error = handler
+            .handle(ActionRequest {
+                actor: actor(),
+                command: ActionCommand::AddEvidenceToLink(AddEvidenceToLinkCommand {
+                    link_id: "link-3".to_string(),
+                    evidence_id: "evidence-9".to_string(),
+                    description: " ".to_string(),
+                }),
+            })
+            .expect_err("empty evidence description should fail");
+
+        assert_eq!(
+            error,
+            KernelError::Validation {
+                field: "command.add_evidence_to_link.description",
                 message: "must be a non-empty string".to_string(),
             }
         );

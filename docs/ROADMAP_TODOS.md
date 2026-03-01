@@ -101,7 +101,7 @@ Use it as the source of truth for priorities, and mirror each item into GitHub I
 - [x] Roadmap(C2-3): Define candidate link schema (confidence/reasons/lineage) + tests
 
 ## C3. Action / Policy / Audit Runtime MVP
-- [ ] Roadmap(C3-1): Implement kernel actions (confirmLink/rejectLink/addEvidenceToLink)
+- [x] Roadmap(C3-1): Implement kernel actions (confirmLink/rejectLink/addEvidenceToLink)
 - [ ] Roadmap(C3-2): Implement role-based policy checks for action execution
 - [ ] Roadmap(C3-3): Implement append-only audit logging backend (SQLite) + query model
 
