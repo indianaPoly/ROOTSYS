@@ -97,7 +97,7 @@ Use it as the source of truth for priorities, and mirror each item into GitHub I
 
 ## C2. Linking Engine MVP (R1 + lightweight R2)
 - [x] Roadmap(C2-1): Implement deterministic R1 link generation from strong keys
-- [ ] Roadmap(C2-2): Implement configurable lightweight R2 candidate generation (time window + shared attributes)
+- [x] Roadmap(C2-2): Implement configurable lightweight R2 candidate generation (time window + shared attributes)
 - [ ] Roadmap(C2-3): Define candidate link schema (confidence/reasons/lineage) + tests
 
 ## C3. Action / Policy / Audit Runtime MVP

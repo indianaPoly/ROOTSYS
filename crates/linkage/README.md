@@ -7,5 +7,5 @@ Entry point for crates/linkage.
 - Owner: repository maintainers (`@indianaPoly`).
 
 ## Contents
-- `crates/linkage/src/lib.rs`: link seed model, strong-key deterministic R1 generator, and lightweight R2 candidate generator.
+- `crates/linkage/src/lib.rs`: link seed model, strong-key deterministic R1 generator, and configurable lightweight R2 (time-window + shared-attribute) candidate generator.
 - `docs/architecture/mvp_roadmap_c_track.md`: C-track linkage implementation roadmap.
