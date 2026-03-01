@@ -30,9 +30,10 @@ cargo run -p shell -- \
 
 echo "[5/6] Merging MES + QMS outputs"
 cargo run -p fabric -- \
-  --inputs "$OUT_DIR/mes.output.jsonl" "$OUT_DIR/qms.output.jsonl" \
+  --inputs "$OUT_DIR/mes.output.jsonl" \
+  --inputs "$OUT_DIR/qms.output.jsonl" \
   --output "$OUT_DIR/merged.output.jsonl" \
-  --dedupe true
+  --dedupe
 
 echo "[6/6] Done"
 echo "Artifacts:"
