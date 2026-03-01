@@ -131,6 +131,11 @@ cargo run -p fabric -- \
   --dedupe
 ```
 
+### Service-backed smoke tests (REST/Postgres/MySQL)
+```bash
+bash scripts/run_service_smoke_tests.sh
+```
+
 ### DLQ sink options
 - File sink (default):
   - `--dlq-sink file`

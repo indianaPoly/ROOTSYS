@@ -11,6 +11,9 @@
 - `tests/fixtures/interfaces/rest.sample.json`: REST 인터페이스 예시
 - `tests/fixtures/interfaces/postgres.sample.json`: Postgres 인터페이스 예시
 - `tests/fixtures/interfaces/mysql.sample.json`: MySQL 인터페이스 예시
+- `tests/fixtures/interfaces/rest.smoke.json`: 로컬 REST smoke 테스트 인터페이스
+- `tests/fixtures/interfaces/postgres.smoke.json`: 로컬 Postgres smoke 테스트 인터페이스
+- `tests/fixtures/interfaces/mysql.smoke.json`: 로컬 MySQL smoke 테스트 인터페이스
 - `tests/fixtures/interfaces/invalid/*.json`: JSON Schema negative-case 인터페이스 fixture
 - `tests/fixtures/ontology/materialization.input.jsonl`: Ontology materialization fixture input
 - `tests/fixtures/ontology/materialization.expected.jsonl`: Ontology materialization expected output

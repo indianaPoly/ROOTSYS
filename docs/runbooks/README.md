@@ -13,4 +13,5 @@ Entry point for docs/runbooks.
 - `docs/runbooks/observability_baseline_c4_2.md`: structured logs and baseline counters for MVP operations.
 - `docs/runbooks/security_config_baseline_c4_3.md`: secret handling rules and local config baseline.
 - `docs/runbooks/replay_recovery_c4_4.md`: replay and recovery procedure for common failure modes.
+- `docs/runbooks/service_smoke_tests.md`: service-backed smoke test procedure for REST/Postgres/MySQL.
 - `docs/ROADMAP_TODOS.md`: operations-related roadmap items.
