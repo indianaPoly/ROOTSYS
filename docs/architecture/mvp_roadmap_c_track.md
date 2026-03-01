@@ -12,9 +12,9 @@ It starts from the current state where A0-A5 and B6-B8 are completed, but key ru
 
 ## Current gap summary
 
-- `crates/ontology` is README-only (no object model materialization code).
-- `crates/linkage` is README-only (no R1/R2 candidate generation engine).
-- `crates/kernel` is README-only (no action/policy/audit command handling).
+- `crates/ontology` now has MVP materialization, but needs richer identity/link integration beyond baseline rules.
+- `crates/linkage` now has MVP generator interfaces, but needs production R1/R2 semantics and schema hardening.
+- `crates/kernel` now has MVP action handlers, but needs policy matrix and persistent audit backend.
 - `infra/*` is mostly placeholder docs (no concrete local deploy/observability/security baseline).
 
 ## Milestones

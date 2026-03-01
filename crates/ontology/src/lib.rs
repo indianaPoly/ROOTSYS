@@ -18,11 +18,21 @@ pub struct OntologyLineage {
     pub interface_version: String,
     pub record_id: String,
     pub ingested_at_unix_ms: i64,
+    pub payload_kind: String,
+    pub payload_sha256: String,
+    pub warning_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OntologyIdentityStrategy {
+    DeterministicV1,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OntologyObject {
     pub object_id: String,
+    pub identity_strategy: OntologyIdentityStrategy,
     pub object_type: OntologyObjectType,
     pub lineage: OntologyLineage,
     pub attributes: Value,
@@ -65,12 +75,16 @@ impl BasicOntologyMaterializer {
             interface_version: record.interface.version.clone(),
             record_id: record.record_id.clone(),
             ingested_at_unix_ms: record.ingested_at_unix_ms,
+            payload_kind: payload_kind(record),
+            payload_sha256: payload_sha256(record),
+            warning_count: record.warnings.len(),
         }
     }
 
     fn to_object(record: &IntegrationRecord, object_type: OntologyObjectType) -> OntologyObject {
         OntologyObject {
             object_id: Self::object_id(record, object_type),
+            identity_strategy: OntologyIdentityStrategy::DeterministicV1,
             object_type,
             lineage: Self::lineage(record),
             attributes: Self::extract_attributes(record, object_type),
@@ -168,6 +182,20 @@ fn has_any_key(object: &Map<String, Value>, keys: &[&str]) -> bool {
     keys.iter().any(|key| object.contains_key(*key))
 }
 
+fn payload_kind(record: &IntegrationRecord) -> String {
+    match &record.payload {
+        Payload::Json(_) => "json".to_string(),
+        Payload::Text(_) => "text".to_string(),
+        Payload::Binary { .. } => "binary".to_string(),
+    }
+}
+
+fn payload_sha256(record: &IntegrationRecord) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(record.payload.to_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -175,7 +203,10 @@ mod tests {
 
     use common::{IntegrationRecord, InterfaceRef, Payload, RecordMetadata};
 
-    use super::{BasicOntologyMaterializer, OntologyMaterializer, OntologyObjectType};
+    use super::{
+        BasicOntologyMaterializer, OntologyIdentityStrategy, OntologyMaterializer,
+        OntologyObjectType,
+    };
 
     fn sample_record() -> IntegrationRecord {
         IntegrationRecord {
@@ -218,8 +249,43 @@ mod tests {
         let objects = materializer.materialize(&record);
         assert_eq!(objects.len(), 1);
         assert_eq!(objects[0].object_type, OntologyObjectType::Defect);
+        assert_eq!(
+            objects[0].identity_strategy,
+            OntologyIdentityStrategy::DeterministicV1
+        );
         assert_eq!(objects[0].lineage.source, "mes");
         assert_eq!(objects[0].lineage.record_id, "defect-001");
+        assert_eq!(objects[0].lineage.payload_kind, "text");
+        assert_eq!(objects[0].lineage.warning_count, 0);
+    }
+
+    #[test]
+    fn materialization_is_idempotent_for_same_input() {
+        let materializer = BasicOntologyMaterializer;
+        let record = sample_record();
+
+        let first = materializer.materialize(&record);
+        let second = materializer.materialize(&record);
+
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn lineage_contains_stable_payload_hash() {
+        let materializer = BasicOntologyMaterializer;
+        let record = sample_record();
+
+        let first_hash = materializer.materialize(&record)[0]
+            .lineage
+            .payload_sha256
+            .clone();
+        let second_hash = materializer.materialize(&record)[0]
+            .lineage
+            .payload_sha256
+            .clone();
+
+        assert_eq!(first_hash, second_hash);
+        assert!(!first_hash.is_empty());
     }
 
     #[test]
