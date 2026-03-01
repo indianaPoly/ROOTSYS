@@ -86,14 +86,14 @@ Use it as the source of truth for priorities, and mirror each item into GitHub I
 ---
 
 ## C0. Product Core Bootstrap (Ontology/Linkage/Kernel)
-- [ ] Roadmap(C0-1): Bootstrap `crates/ontology` crate with MVP interfaces + tests
-- [ ] Roadmap(C0-2): Bootstrap `crates/linkage` crate with MVP interfaces + tests
-- [ ] Roadmap(C0-3): Bootstrap `crates/kernel` crate with MVP interfaces + tests
+- [x] Roadmap(C0-1): Bootstrap `crates/ontology` crate with MVP interfaces + tests
+- [x] Roadmap(C0-2): Bootstrap `crates/linkage` crate with MVP interfaces + tests
+- [x] Roadmap(C0-3): Bootstrap `crates/kernel` crate with MVP interfaces + tests
 
 ## C1. Ontology Materialization MVP
-- [ ] Roadmap(C1-1): Implement object materialization for Defect/Cause/Evidence from IntegrationRecord
-- [ ] Roadmap(C1-2): Define deterministic object identity and lineage propagation rules
-- [ ] Roadmap(C1-3): Add ontology fixtures + integration tests for materialization outputs
+- [x] Roadmap(C1-1): Implement object materialization for Defect/Cause/Evidence from IntegrationRecord
+- [x] Roadmap(C1-2): Define deterministic object identity and lineage propagation rules
+- [x] Roadmap(C1-3): Add ontology fixtures + integration tests for materialization outputs
 
 ## C2. Linking Engine MVP (R1 + lightweight R2)
 - [ ] Roadmap(C2-1): Implement deterministic R1 link generation from strong keys

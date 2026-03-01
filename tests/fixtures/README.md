@@ -12,6 +12,7 @@
 - `tests/fixtures/interfaces/postgres.sample.json`: Postgres 인터페이스 예시
 - `tests/fixtures/interfaces/mysql.sample.json`: MySQL 인터페이스 예시
 - `tests/fixtures/ontology/materialization.input.jsonl`: Ontology materialization fixture input
+- `tests/fixtures/ontology/materialization.expected.jsonl`: Ontology materialization expected output
 
 ## 생성
 ```bash
