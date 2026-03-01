@@ -1,5 +1,11 @@
 target
 
+# Frontend local artifacts
+ui/.next/
+ui/node_modules/
+ui/.npm-cache/
+ui/tsconfig.tsbuildinfo
+
 # Local environment and secrets
 .env
 .env.*

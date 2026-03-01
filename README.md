@@ -136,6 +136,20 @@ cargo run -p fabric -- \
 bash scripts/run_service_smoke_tests.sh
 ```
 
+### Complex pipeline checks (schedule/product-flow/replay/merge)
+```bash
+bash scripts/run_complex_pipeline_checks.sh
+```
+
+### Runtime dashboard UI (Next.js 16)
+```bash
+cd ui
+npm install
+npm run dev
+```
+
+Open `http://localhost:3000` to view artifact status from `/tmp/rootsys-smoke` and `/tmp/rootsys-complex` outputs.
+
 ### DLQ sink options
 - File sink (default):
   - `--dlq-sink file`
