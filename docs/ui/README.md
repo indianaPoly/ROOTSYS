@@ -10,3 +10,4 @@ Entry point for docs/ui.
 - `docs/ROADMAP_TODOS.md`: B8 roadmap tasks.
 - `docs/WHITE_PAPER.md`: user/app layer context.
 - `docs/ui/ia_ux_requirements_b8_1.md`: B8-1 IA/UX requirements for single-screen analysis.
+- `docs/ui/candidate_approval_rejection_ux_b8_2.md`: B8-2 candidate approval/rejection UX with justification capture.
