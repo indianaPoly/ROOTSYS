@@ -15,6 +15,13 @@
   5. `ui` 의존성 설치 + `typecheck` + `build`
 - 실패 조건: 어느 단계에서든 non-zero exit면 즉시 중단(`set -euo pipefail`).
 
+### `scripts/lib/company_config.sh`
+- 목적: 기업별 프로파일(`config/companies/*.env`) 로드 + 필수 경로 검증 공통 처리.
+- 핵심 함수:
+  - `load_company_config(root_dir)`: 프로파일/직접 지정 config를 반영하고 기본값 주입
+  - `validate_company_config()`: 계약/인터페이스 필수 파일 존재 여부 검증
+- 경로 처리: 상대 경로를 프로젝트 루트 기준 절대 경로로 정규화.
+
 ## 2) Service smoke tests
 
 ### `scripts/run_service_smoke_tests.sh`

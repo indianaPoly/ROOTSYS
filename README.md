@@ -155,6 +155,19 @@ Open `http://localhost:3000` to view artifact status from `/tmp/rootsys-smoke` a
 bash scripts/run_all_checks_and_prepare_ui.sh
 ```
 
+### Company profile-based execution
+```bash
+bash scripts/run_all_checks_and_prepare_ui.sh default
+```
+
+Profile file location:
+- `config/companies/<profile>.env`
+
+Custom config file override:
+```bash
+ROOTSYS_CONFIG_FILE=/absolute/path/to/company.env bash scripts/run_all_checks_and_prepare_ui.sh
+```
+
 Optional: automatically start Next.js dev server after all checks:
 ```bash
 ROOTSYS_RUN_UI_DEV=1 bash scripts/run_all_checks_and_prepare_ui.sh

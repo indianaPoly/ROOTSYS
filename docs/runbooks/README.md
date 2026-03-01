@@ -16,4 +16,5 @@ Entry point for docs/runbooks.
 - `docs/runbooks/service_smoke_tests.md`: service-backed smoke test procedure for REST/Postgres/MySQL.
 - `docs/runbooks/complex_pipeline_checks.md`: deeper runtime checks for interval/product-flow/sqlite-replay/merge.
 - `docs/runbooks/code_and_script_annotations.md`: annotation-style reference for added code/scripts and execution flow.
+- `docs/runbooks/company_profile_configuration.md`: company-specific profile configuration before execution.
 - `docs/ROADMAP_TODOS.md`: operations-related roadmap items.
