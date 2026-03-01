@@ -20,6 +20,18 @@ use drivers::{
     StreamConfig as DriverStreamConfig, StreamDriver, StreamSourceKind as DriverStreamSourceKind,
     StreamStartOffset as DriverStreamStartOffset, TextLineDriver,
 };
+use kernel::{
+    ActionActor, ActionCommand, ActionHandler, ActionRequest, AddEvidenceToLinkCommand, AuditEvent,
+    AuditLogStore, BasicActionHandler, ConfirmLinkCommand, SqliteAuditLogStore,
+};
+use linkage::{
+    DeterministicLinkGenerator, ExactRecordIdDeterministicGenerator, LightweightR2Config,
+    LightweightR2ProbabilisticGenerator, LinkSeed, ProbabilisticLinkGenerator,
+    StrongKeyDeterministicGenerator,
+};
+use ontology::{
+    BasicOntologyMaterializer, OntologyMaterializer, OntologyObject, OntologyObjectType,
+};
 use runtime::{
     ApiKeyLocation as RuntimeApiKeyLocation, ContractRegistry, DbKind as RuntimeDbKind, DriverKind,
     ExternalInterface, IntegrationPipeline, PostgresTlsMode as RuntimePostgresTlsMode,
@@ -61,6 +73,10 @@ struct Args {
     format: InputFormat,
     #[arg(long, default_value = "system/contracts/reference/allowlist.json")]
     contract_registry: PathBuf,
+    #[arg(long, default_value_t = false)]
+    enable_product_flow: bool,
+    #[arg(long)]
+    product_output_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -111,6 +127,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut total_records = 0usize;
     let mut total_dead_letters = 0usize;
     let mut metrics = PipelineMetrics::default();
+    let mut product_metrics = ProductFlowMetrics::default();
+    let product_output_paths = if args.enable_product_flow {
+        Some(ProductOutputPaths::new(&args)?)
+    } else {
+        None
+    };
+    let mut next_audit_event_id = 1i64;
 
     for run_idx in 0..schedule.max_runs {
         let metadata = metadata_from_interface(&interface);
@@ -132,6 +155,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if !outcome.dead_letters.is_empty() {
             dlq_sink.write(&outcome.dead_letters, append)?;
+        }
+
+        if let Some(paths) = &product_output_paths {
+            let report =
+                run_product_flow(&outcome.records, paths, append, &mut next_audit_event_id)?;
+            product_metrics.ontology_objects_total += report.ontology_objects;
+            product_metrics.deterministic_links_total += report.deterministic_links;
+            product_metrics.candidate_links_total += report.candidate_links;
+            product_metrics.actions_total += report.actions;
+            product_metrics.audit_events_total += report.audit_events;
+
+            emit_structured_log(
+                "product_flow_summary",
+                serde_json::json!({
+                    "run_index": run_idx + 1,
+                    "ontology_objects": report.ontology_objects,
+                    "deterministic_links": report.deterministic_links,
+                    "candidate_links": report.candidate_links,
+                    "actions": report.actions,
+                    "audit_events": report.audit_events
+                }),
+            );
         }
 
         total_records += outcome.records.len();
@@ -180,6 +225,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
+    if args.enable_product_flow {
+        emit_structured_log(
+            "product_flow_metrics",
+            serde_json::json!({
+                "ontology_objects_total": product_metrics.ontology_objects_total,
+                "deterministic_links_total": product_metrics.deterministic_links_total,
+                "candidate_links_total": product_metrics.candidate_links_total,
+                "actions_total": product_metrics.actions_total,
+                "audit_events_total": product_metrics.audit_events_total
+            }),
+        );
+    }
+
     Ok(())
 }
 
@@ -189,6 +247,15 @@ struct PipelineMetrics {
     input_records_total: usize,
     integration_records_total: usize,
     dlq_records_total: usize,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct ProductFlowMetrics {
+    ontology_objects_total: usize,
+    deterministic_links_total: usize,
+    candidate_links_total: usize,
+    actions_total: usize,
+    audit_events_total: usize,
 }
 
 fn emit_structured_log(event: &str, payload: serde_json::Value) {
@@ -206,6 +273,285 @@ fn now_unix_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or_default()
+}
+
+#[derive(Debug, Clone)]
+struct ProductOutputPaths {
+    ontology_output: PathBuf,
+    deterministic_links_output: PathBuf,
+    candidate_links_output: PathBuf,
+    actions_output: PathBuf,
+    audit_db_path: PathBuf,
+}
+
+impl ProductOutputPaths {
+    fn new(args: &Args) -> Result<Self, Box<dyn Error>> {
+        let output_dir = if let Some(path) = &args.product_output_dir {
+            path.clone()
+        } else {
+            default_product_output_dir(&args.output)
+        };
+
+        std::fs::create_dir_all(&output_dir)?;
+
+        Ok(Self {
+            ontology_output: output_dir.join("ontology.objects.jsonl"),
+            deterministic_links_output: output_dir.join("links.r1.jsonl"),
+            candidate_links_output: output_dir.join("links.r2.jsonl"),
+            actions_output: output_dir.join("actions.results.jsonl"),
+            audit_db_path: output_dir.join("actions.audit.sqlite"),
+        })
+    }
+}
+
+fn default_product_output_dir(output_path: &PathBuf) -> PathBuf {
+    let parent = output_path
+        .parent()
+        .map(|path| path.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let stem = output_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("output");
+
+    parent.join(format!("{}.product", stem))
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct ProductFlowReport {
+    ontology_objects: usize,
+    deterministic_links: usize,
+    candidate_links: usize,
+    actions: usize,
+    audit_events: usize,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct ProductActionLog {
+    event_id: i64,
+    actor_id: String,
+    actor_role: String,
+    action_kind: String,
+    link_id: String,
+    summary: String,
+    created_at_unix_ms: i64,
+}
+
+fn run_product_flow(
+    records: &[common::IntegrationRecord],
+    output_paths: &ProductOutputPaths,
+    append: bool,
+    next_audit_event_id: &mut i64,
+) -> Result<ProductFlowReport, Box<dyn Error>> {
+    let materializer = BasicOntologyMaterializer;
+    let mut ontology_objects = Vec::new();
+    for record in records {
+        ontology_objects.extend(materializer.materialize(record));
+    }
+
+    write_jsonl(&output_paths.ontology_output, &ontology_objects, append)?;
+
+    let seeds = build_link_seeds(&ontology_objects);
+    let strong_key_generator = StrongKeyDeterministicGenerator::new("related_to");
+    let exact_record_generator =
+        ExactRecordIdDeterministicGenerator::new("related_to", "r1_exact_record_id");
+
+    let mut deterministic_links = Vec::new();
+    for seed in &seeds {
+        if let Some(link) = exact_record_generator.generate(seed) {
+            deterministic_links.push(link);
+            continue;
+        }
+        if let Some(link) = strong_key_generator.generate(seed) {
+            deterministic_links.push(link);
+        }
+    }
+
+    write_jsonl(
+        &output_paths.deterministic_links_output,
+        &deterministic_links,
+        append,
+    )?;
+
+    let candidate_generator =
+        LightweightR2ProbabilisticGenerator::new("candidate_of", LightweightR2Config::default());
+    let mut candidate_links = candidate_generator.generate_candidates(&seeds);
+    candidate_links.retain(|candidate| candidate.validate_schema().is_ok());
+
+    write_jsonl(
+        &output_paths.candidate_links_output,
+        &candidate_links,
+        append,
+    )?;
+
+    let action_handler = BasicActionHandler::default();
+    let audit_store = SqliteAuditLogStore::new(&output_paths.audit_db_path)?;
+    let mut action_logs = Vec::new();
+
+    for link in &deterministic_links {
+        let request = ActionRequest {
+            actor: ActionActor {
+                actor_id: "system-admin".to_string(),
+                role: "admin".to_string(),
+            },
+            command: ActionCommand::ConfirmLink(ConfirmLinkCommand {
+                link_id: link.link_id.clone(),
+                justification: format!("auto-confirmed by {}", link.rule),
+            }),
+        };
+        let result = action_handler
+            .handle(request)
+            .map_err(|error| format!("action handling failed: {error:?}"))?;
+        append_audit_event(
+            &audit_store,
+            &mut action_logs,
+            next_audit_event_id,
+            "system-admin",
+            "admin",
+            &result,
+        )?;
+    }
+
+    for (idx, candidate) in candidate_links.iter().enumerate().take(5) {
+        let request = ActionRequest {
+            actor: ActionActor {
+                actor_id: "system-operator".to_string(),
+                role: "operator".to_string(),
+            },
+            command: ActionCommand::AddEvidenceToLink(AddEvidenceToLinkCommand {
+                link_id: candidate.link_id.clone(),
+                evidence_id: format!("candidate-evidence-{}", idx + 1),
+                description: "auto-attached during product flow execution".to_string(),
+            }),
+        };
+        let result = action_handler
+            .handle(request)
+            .map_err(|error| format!("action handling failed: {error:?}"))?;
+        append_audit_event(
+            &audit_store,
+            &mut action_logs,
+            next_audit_event_id,
+            "system-operator",
+            "operator",
+            &result,
+        )?;
+    }
+
+    write_jsonl(&output_paths.actions_output, &action_logs, append)?;
+
+    Ok(ProductFlowReport {
+        ontology_objects: ontology_objects.len(),
+        deterministic_links: deterministic_links.len(),
+        candidate_links: candidate_links.len(),
+        actions: action_logs.len(),
+        audit_events: action_logs.len(),
+    })
+}
+
+fn append_audit_event(
+    audit_store: &impl AuditLogStore,
+    action_logs: &mut Vec<ProductActionLog>,
+    next_audit_event_id: &mut i64,
+    actor_id: &str,
+    actor_role: &str,
+    action_result: &kernel::ActionResult,
+) -> Result<(), Box<dyn Error>> {
+    let event = AuditEvent {
+        event_id: *next_audit_event_id,
+        actor_id: actor_id.to_string(),
+        actor_role: actor_role.to_string(),
+        action_kind: action_result.action_kind,
+        link_id: action_result.link_id.clone(),
+        summary: action_result.summary.clone(),
+        created_at_unix_ms: now_unix_ms(),
+    };
+
+    audit_store.append(&event)?;
+
+    action_logs.push(ProductActionLog {
+        event_id: event.event_id,
+        actor_id: event.actor_id,
+        actor_role: event.actor_role,
+        action_kind: format!("{:?}", event.action_kind),
+        link_id: event.link_id,
+        summary: event.summary,
+        created_at_unix_ms: event.created_at_unix_ms,
+    });
+
+    *next_audit_event_id += 1;
+    Ok(())
+}
+
+fn build_link_seeds(objects: &[OntologyObject]) -> Vec<LinkSeed> {
+    let defect_objects = objects
+        .iter()
+        .filter(|object| object.object_type == OntologyObjectType::Defect)
+        .collect::<Vec<_>>();
+    let non_defect_objects = objects
+        .iter()
+        .filter(|object| object.object_type != OntologyObjectType::Defect)
+        .collect::<Vec<_>>();
+
+    let mut seeds = Vec::new();
+    for defect in &defect_objects {
+        for target in &non_defect_objects {
+            let left_attributes = attributes_to_string_map(&defect.attributes);
+            let right_attributes = attributes_to_string_map(&target.attributes);
+
+            seeds.push(LinkSeed {
+                left_object_id: defect.object_id.clone(),
+                right_object_id: target.object_id.clone(),
+                left_record_id: defect.lineage.record_id.clone(),
+                right_record_id: target.lineage.record_id.clone(),
+                left_source: defect.lineage.source.clone(),
+                right_source: target.lineage.source.clone(),
+                left_strong_keys: select_strong_keys(&left_attributes),
+                right_strong_keys: select_strong_keys(&right_attributes),
+                left_attributes,
+                right_attributes,
+                left_event_unix_ms: Some(defect.lineage.ingested_at_unix_ms),
+                right_event_unix_ms: Some(target.lineage.ingested_at_unix_ms),
+            });
+        }
+    }
+
+    seeds
+}
+
+fn attributes_to_string_map(
+    value: &serde_json::Value,
+) -> std::collections::BTreeMap<String, String> {
+    let mut map = std::collections::BTreeMap::new();
+    let Some(object) = value.as_object() else {
+        return map;
+    };
+
+    for (key, raw_value) in object {
+        let value = raw_value
+            .as_str()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| raw_value.to_string());
+        map.insert(key.clone(), value);
+    }
+
+    map
+}
+
+fn select_strong_keys(
+    attributes: &std::collections::BTreeMap<String, String>,
+) -> std::collections::BTreeMap<String, String> {
+    let keys = ["defect_id", "lot_id", "equipment_id", "cause_id"];
+    let mut selected = std::collections::BTreeMap::new();
+
+    for key in keys {
+        if let Some(value) = attributes.get(key) {
+            if !value.trim().is_empty() {
+                selected.insert(key.to_string(), value.clone());
+            }
+        }
+    }
+
+    selected
 }
 
 fn resolve_schedule(args: &Args) -> Result<ResolvedSchedule, Box<dyn Error>> {
@@ -863,12 +1209,15 @@ fn stream_config_from_interface(
 mod tests {
     use super::{
         build_dlq_sink, dead_letters_to_external_records, is_valid_sqlite_identifier,
-        resolve_schedule, with_suffix, Args, DlqSinkKind, InputFormat, ScheduleMode,
+        resolve_schedule, run_product_flow, with_suffix, Args, DlqSinkKind, InputFormat,
+        ProductOutputPaths, ScheduleMode,
     };
     use common::{
-        DeadLetter, DlqLineage, InterfaceRef, Payload, RecordMetadata, ValidationMessage,
+        DeadLetter, DlqLineage, IntegrationRecord, InterfaceRef, Payload, RecordMetadata,
+        ValidationMessage,
     };
     use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn with_suffix_appends_before_extension() {
@@ -903,6 +1252,8 @@ mod tests {
             replay_dlq_table: "dead_letters".to_string(),
             format: InputFormat::Auto,
             contract_registry: PathBuf::from("/tmp/allowlist.json"),
+            enable_product_flow: false,
+            product_output_dir: None,
         };
 
         let _ = build_dlq_sink(&args);
@@ -992,6 +1343,8 @@ mod tests {
             replay_dlq_table: "dead_letters".to_string(),
             format: InputFormat::Auto,
             contract_registry: PathBuf::from("/tmp/allowlist.json"),
+            enable_product_flow: false,
+            product_output_dir: None,
         };
 
         let schedule = resolve_schedule(&args).unwrap();
@@ -1017,10 +1370,80 @@ mod tests {
             replay_dlq_table: "dead_letters".to_string(),
             format: InputFormat::Auto,
             contract_registry: PathBuf::from("/tmp/allowlist.json"),
+            enable_product_flow: false,
+            product_output_dir: None,
         };
 
         let schedule = resolve_schedule(&args).unwrap();
         assert_eq!(schedule.max_runs, 3);
         assert_eq!(schedule.interval_seconds, Some(1));
+    }
+
+    #[test]
+    fn product_flow_executes_ontology_linkage_kernel_chain() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "rootsys-shell-product-flow-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time should be valid")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp_dir).expect("temp dir should be created");
+
+        let output_paths = ProductOutputPaths {
+            ontology_output: temp_dir.join("ontology.objects.jsonl"),
+            deterministic_links_output: temp_dir.join("links.r1.jsonl"),
+            candidate_links_output: temp_dir.join("links.r2.jsonl"),
+            actions_output: temp_dir.join("actions.results.jsonl"),
+            audit_db_path: temp_dir.join("actions.audit.sqlite"),
+        };
+
+        let records = vec![
+            IntegrationRecord {
+                source: "mes".to_string(),
+                interface: InterfaceRef {
+                    name: "mes".to_string(),
+                    version: "v1".to_string(),
+                },
+                record_id: "rec-defect-1".to_string(),
+                ingested_at_unix_ms: 1_706_000_000_001,
+                payload: Payload::from_json(serde_json::json!({
+                    "defect_id": "D-1",
+                    "lot_id": "LOT-10",
+                    "line": "L1"
+                })),
+                metadata: RecordMetadata::default(),
+                warnings: Vec::new(),
+            },
+            IntegrationRecord {
+                source: "qms".to_string(),
+                interface: InterfaceRef {
+                    name: "qms".to_string(),
+                    version: "v1".to_string(),
+                },
+                record_id: "rec-cause-1".to_string(),
+                ingested_at_unix_ms: 1_706_000_000_101,
+                payload: Payload::from_json(serde_json::json!({
+                    "defect_id": "D-1",
+                    "cause_id": "C-7",
+                    "cause": "temperature_drift"
+                })),
+                metadata: RecordMetadata::default(),
+                warnings: Vec::new(),
+            },
+        ];
+
+        let mut next_audit_event_id = 1i64;
+        let report = run_product_flow(&records, &output_paths, false, &mut next_audit_event_id)
+            .expect("product flow should run successfully");
+
+        assert!(report.ontology_objects >= 3);
+        assert!(report.deterministic_links >= 1);
+        assert!(report.actions >= 1);
+        assert!(output_paths.ontology_output.exists());
+        assert!(output_paths.deterministic_links_output.exists());
+        assert!(output_paths.actions_output.exists());
+        assert!(output_paths.audit_db_path.exists());
     }
 }
