@@ -82,3 +82,31 @@ Use it as the source of truth for priorities, and mirror each item into GitHub I
 - [x] Roadmap(B8-1): Define IA/UX requirements for single-screen analysis view
 - [x] Roadmap(B8-2): Implement candidate approval/rejection UX with justification capture
 - [x] Roadmap(B8-3): Add operational dashboards (DLQ volume, approval rate, lead time)
+
+---
+
+## C0. Product Core Bootstrap (Ontology/Linkage/Kernel)
+- [ ] Roadmap(C0-1): Bootstrap `crates/ontology` crate with MVP interfaces + tests
+- [ ] Roadmap(C0-2): Bootstrap `crates/linkage` crate with MVP interfaces + tests
+- [ ] Roadmap(C0-3): Bootstrap `crates/kernel` crate with MVP interfaces + tests
+
+## C1. Ontology Materialization MVP
+- [ ] Roadmap(C1-1): Implement object materialization for Defect/Cause/Evidence from IntegrationRecord
+- [ ] Roadmap(C1-2): Define deterministic object identity and lineage propagation rules
+- [ ] Roadmap(C1-3): Add ontology fixtures + integration tests for materialization outputs
+
+## C2. Linking Engine MVP (R1 + lightweight R2)
+- [ ] Roadmap(C2-1): Implement deterministic R1 link generation from strong keys
+- [ ] Roadmap(C2-2): Implement configurable lightweight R2 candidate generation (time window + shared attributes)
+- [ ] Roadmap(C2-3): Define candidate link schema (confidence/reasons/lineage) + tests
+
+## C3. Action / Policy / Audit Runtime MVP
+- [ ] Roadmap(C3-1): Implement kernel actions (confirmLink/rejectLink/addEvidenceToLink)
+- [ ] Roadmap(C3-2): Implement role-based policy checks for action execution
+- [ ] Roadmap(C3-3): Implement append-only audit logging backend (SQLite) + query model
+
+## C4. Local Ops Baseline for MVP
+- [ ] Roadmap(C4-1): Provide local bootstrap path for end-to-end MVP run (docs/scripts)
+- [ ] Roadmap(C4-2): Add baseline observability (structured logs + key metrics counters)
+- [ ] Roadmap(C4-3): Add security/config baseline (.env template + secret handling guidance)
+- [ ] Roadmap(C4-4): Add replay/recovery runbook for common failure modes

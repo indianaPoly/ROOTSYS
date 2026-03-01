@@ -8,4 +8,5 @@ Entry point for docs/architecture.
 
 ## Contents
 - `docs/WHITE_PAPER.md`: end-to-end layered architecture reference.
+- `docs/architecture/mvp_roadmap_c_track.md`: post-A/B implementation roadmap for MVP completion.
 - `README.md` (this file): architecture docs entrypoint.
