@@ -96,7 +96,7 @@ Use it as the source of truth for priorities, and mirror each item into GitHub I
 - [x] Roadmap(C1-3): Add ontology fixtures + integration tests for materialization outputs
 
 ## C2. Linking Engine MVP (R1 + lightweight R2)
-- [ ] Roadmap(C2-1): Implement deterministic R1 link generation from strong keys
+- [x] Roadmap(C2-1): Implement deterministic R1 link generation from strong keys
 - [ ] Roadmap(C2-2): Implement configurable lightweight R2 candidate generation (time window + shared attributes)
 - [ ] Roadmap(C2-3): Define candidate link schema (confidence/reasons/lineage) + tests
 

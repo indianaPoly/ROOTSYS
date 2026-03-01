@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -9,6 +11,10 @@ pub struct LinkSeed {
     pub right_record_id: String,
     pub left_source: String,
     pub right_source: String,
+    #[serde(default)]
+    pub left_strong_keys: BTreeMap<String, String>,
+    #[serde(default)]
+    pub right_strong_keys: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,6 +54,65 @@ pub trait ProbabilisticLinkGenerator {
 pub struct ExactRecordIdDeterministicGenerator {
     pub relation: String,
     pub rule: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct StrongKeyDeterministicGenerator {
+    pub relation: String,
+    pub rule_prefix: String,
+}
+
+impl StrongKeyDeterministicGenerator {
+    pub fn new(relation: impl Into<String>) -> Self {
+        Self {
+            relation: relation.into(),
+            rule_prefix: "r1_strong_keys".to_string(),
+        }
+    }
+
+    fn matched_strong_keys(&self, seed: &LinkSeed) -> Vec<String> {
+        let mut matched = Vec::new();
+        for key in STRONG_KEY_PRIORITY {
+            let left = seed.left_strong_keys.get(*key).map(String::as_str);
+            let right = seed.right_strong_keys.get(*key).map(String::as_str);
+
+            if let (Some(left), Some(right)) = (left, right) {
+                if !left.trim().is_empty() && left == right {
+                    matched.push((*key).to_string());
+                }
+            }
+        }
+
+        matched
+    }
+}
+
+impl DeterministicLinkGenerator for StrongKeyDeterministicGenerator {
+    fn generate(&self, seed: &LinkSeed) -> Option<DeterministicLink> {
+        let matched_keys = self.matched_strong_keys(seed);
+        if matched_keys.is_empty() {
+            return None;
+        }
+
+        let rule = format!("{}:{}", self.rule_prefix, matched_keys.join("+"));
+
+        Some(DeterministicLink {
+            link_id: deterministic_link_id(
+                &seed.left_object_id,
+                &seed.right_object_id,
+                &self.relation,
+                &rule,
+            ),
+            relation: self.relation.clone(),
+            rule,
+            lineage: LinkLineage {
+                left_record_id: seed.left_record_id.clone(),
+                right_record_id: seed.right_record_id.clone(),
+                left_source: seed.left_source.clone(),
+                right_source: seed.right_source.clone(),
+            },
+        })
+    }
 }
 
 impl ExactRecordIdDeterministicGenerator {
@@ -192,11 +257,14 @@ fn prefix_similarity(left: &str, right: &str) -> f32 {
     shared_prefix_len as f32 / max_len
 }
 
+const STRONG_KEY_PRIORITY: &[&str] = &["defect_id", "lot_id", "equipment_id", "cause_id"];
+
 #[cfg(test)]
 mod tests {
     use super::{
         DeterministicLinkGenerator, ExactRecordIdDeterministicGenerator, LinkSeed,
         PrefixSimilarityProbabilisticGenerator, ProbabilisticLinkGenerator,
+        StrongKeyDeterministicGenerator,
     };
 
     fn seed(left_record_id: &str, right_record_id: &str) -> LinkSeed {
@@ -207,7 +275,18 @@ mod tests {
             right_record_id: right_record_id.to_string(),
             left_source: "mes".to_string(),
             right_source: "qms".to_string(),
+            left_strong_keys: std::collections::BTreeMap::new(),
+            right_strong_keys: std::collections::BTreeMap::new(),
         }
+    }
+
+    fn seed_with_strong_key(key: &str, value: &str) -> LinkSeed {
+        let mut seed = seed("left-record", "right-record");
+        seed.left_strong_keys
+            .insert(key.to_string(), value.to_string());
+        seed.right_strong_keys
+            .insert(key.to_string(), value.to_string());
+        seed
     }
 
     #[test]
@@ -251,5 +330,48 @@ mod tests {
 
         let candidates = generator.generate_candidates(&seeds);
         assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn strong_key_generator_emits_link_when_defect_id_matches() {
+        let generator = StrongKeyDeterministicGenerator::new("has_cause");
+        let result = generator.generate(&seed_with_strong_key("defect_id", "D-100"));
+
+        assert!(result.is_some());
+        let link = result.expect("link should be emitted");
+        assert_eq!(link.relation, "has_cause");
+        assert_eq!(link.rule, "r1_strong_keys:defect_id");
+    }
+
+    #[test]
+    fn strong_key_generator_uses_multiple_matched_keys_in_rule() {
+        let generator = StrongKeyDeterministicGenerator::new("has_cause");
+        let mut seed = seed("left-record", "right-record");
+        seed.left_strong_keys
+            .insert("defect_id".to_string(), "D-100".to_string());
+        seed.right_strong_keys
+            .insert("defect_id".to_string(), "D-100".to_string());
+        seed.left_strong_keys
+            .insert("lot_id".to_string(), "LOT-10".to_string());
+        seed.right_strong_keys
+            .insert("lot_id".to_string(), "LOT-10".to_string());
+
+        let result = generator.generate(&seed);
+        assert!(result.is_some());
+        let link = result.expect("link should be emitted");
+        assert_eq!(link.rule, "r1_strong_keys:defect_id+lot_id");
+    }
+
+    #[test]
+    fn strong_key_generator_skips_when_keys_do_not_match() {
+        let generator = StrongKeyDeterministicGenerator::new("has_cause");
+        let mut seed = seed("left-record", "right-record");
+        seed.left_strong_keys
+            .insert("defect_id".to_string(), "D-100".to_string());
+        seed.right_strong_keys
+            .insert("defect_id".to_string(), "D-101".to_string());
+
+        let result = generator.generate(&seed);
+        assert!(result.is_none());
     }
 }
