@@ -1,0 +1,17 @@
+{
+  "name": "external-api",
+  "version": "v1",
+  "driver": {
+    "kind": "rest",
+    "rest": {
+      "url": "http://127.0.0.1:18080/events",
+      "method": "GET",
+      "response_format": "json",
+      "items_pointer": "/items"
+    }
+  },
+  "payload_format": "json",
+  "record_id_policy": "strict",
+  "record_id_paths": ["/event_id"],
+  "required_paths": ["/event_id"]
+}

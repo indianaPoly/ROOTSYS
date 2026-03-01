@@ -1,0 +1,17 @@
+{
+  "name": "ops-db",
+  "version": "v1",
+  "driver": {
+    "kind": "db",
+    "db": {
+      "kind": "postgres",
+      "connection": "host=127.0.0.1 port=55432 user=app password=secret dbname=ops",
+      "query": "SELECT defect_id, lot_id, notes FROM defect_events ORDER BY defect_id",
+      "postgres_tls_mode": "disable"
+    }
+  },
+  "payload_format": "json",
+  "record_id_policy": "strict",
+  "record_id_paths": ["/defect_id", "/lot_id"],
+  "required_paths": ["/defect_id", "/lot_id"]
+}
