@@ -10,3 +10,4 @@ Entry point for scripts.
 - `scripts/create_sample_dbs.py`: creates sample fixture databases.
 - `scripts/run_local_mvp_bootstrap.sh`: runs local MVP bootstrap flow end-to-end.
 - `scripts/run_service_smoke_tests.sh`: runs REST/Postgres/MySQL service-backed smoke tests with exact output assertions.
+- `scripts/run_complex_pipeline_checks.sh`: runs interval/product-flow/sqlite-replay/merge checks with deterministic assertions.
