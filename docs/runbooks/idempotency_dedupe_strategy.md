@@ -45,8 +45,8 @@ This runbook defines how we keep integration and fabric outputs stable when the 
 ## Fabric Strategy (Dedupe)
 
 ### 1) Dedupe Switch
-- `--dedupe true` is recommended for production merge jobs and replay jobs.
-- `--dedupe false` is only for diagnostics, audits, or raw comparison workflows.
+- `--dedupe` is recommended for production merge jobs and replay jobs.
+- omitting `--dedupe` (or passing `--dedupe=false`) is only for diagnostics, audits, or raw comparison workflows.
 
 ### 2) Collapse Rules
 - Records with the same dedupe key collapse to one output row.
@@ -69,7 +69,7 @@ This runbook defines how we keep integration and fabric outputs stable when the 
 - `record_id_policy` chosen explicitly when strict identity behavior is required.
 - `cargo test` and `cargo build` pass before release.
 - Sample fixtures and merge runs confirm:
-  - duplicate collapse works under `--dedupe true`
+  - duplicate collapse works under `--dedupe`
   - non-duplicates are preserved
   - strict-mode unresolved keys go to DLQ
 

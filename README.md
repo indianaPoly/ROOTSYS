@@ -125,9 +125,10 @@ cargo run -p shell -- \
 ### Merge integration outputs
 ```bash
 cargo run -p fabric -- \
-  --inputs /tmp/mes.output.jsonl /tmp/qms.output.jsonl \
+  --inputs /tmp/mes.output.jsonl \
+  --inputs /tmp/qms.output.jsonl \
   --output /tmp/merged.output.jsonl \
-  --dedupe true
+  --dedupe
 ```
 
 ### DLQ sink options
