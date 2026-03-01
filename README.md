@@ -455,8 +455,17 @@ Page/page_size pagination example:
 - Operational strategy reference: `docs/runbooks/idempotency_dedupe_strategy.md`.
 
 ## Next Steps (Planned)
-1. Add schema registry or contract versioning enforcement.
-2. Add streaming drivers (Kafka, CDC) and scheduler integration.
+1. Expand executable product flow coverage across ontology/linkage/kernel runtime paths.
+2. Add shell-level end-to-end integration tests for CLI execution chains.
 
 ## Verification
-Build/test is currently **NOT VERIFIED** in this environment due to restricted network access for crates.io.
+The repository is validated locally with:
+
+```bash
+cargo fmt --check
+cargo check
+cargo test
+cargo build
+```
+
+CI preflight also enforces Rust quality gates on pull requests via `.github/workflows/preflight.yml`.
