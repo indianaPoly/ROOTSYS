@@ -102,7 +102,7 @@ Use it as the source of truth for priorities, and mirror each item into GitHub I
 
 ## C3. Action / Policy / Audit Runtime MVP
 - [x] Roadmap(C3-1): Implement kernel actions (confirmLink/rejectLink/addEvidenceToLink)
-- [ ] Roadmap(C3-2): Implement role-based policy checks for action execution
+- [x] Roadmap(C3-2): Implement role-based policy checks for action execution
 - [ ] Roadmap(C3-3): Implement append-only audit logging backend (SQLite) + query model
 
 ## C4. Local Ops Baseline for MVP

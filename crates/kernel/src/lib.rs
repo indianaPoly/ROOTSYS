@@ -59,14 +59,53 @@ pub enum KernelError {
         field: &'static str,
         message: String,
     },
+    Forbidden {
+        role: String,
+        action: ActionKind,
+    },
 }
 
 pub trait ActionHandler {
     fn handle(&self, request: ActionRequest) -> Result<ActionResult, KernelError>;
 }
 
+#[derive(Debug, Clone)]
+pub struct BasicActionHandler {
+    policy: RolePolicy,
+}
+
+impl Default for BasicActionHandler {
+    fn default() -> Self {
+        Self {
+            policy: RolePolicy::default(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
-pub struct BasicActionHandler;
+pub struct RolePolicy;
+
+impl RolePolicy {
+    pub fn authorize(&self, role: &str, action: ActionKind) -> Result<(), KernelError> {
+        if is_action_allowed(role, action) {
+            return Ok(());
+        }
+
+        Err(KernelError::Forbidden {
+            role: role.to_string(),
+            action,
+        })
+    }
+}
+
+fn is_action_allowed(role: &str, action: ActionKind) -> bool {
+    match role {
+        "admin" => true,
+        "reviewer" => matches!(action, ActionKind::ConfirmLink | ActionKind::RejectLink),
+        "operator" => matches!(action, ActionKind::AddEvidenceToLink),
+        _ => false,
+    }
+}
 
 impl ActionHandler for BasicActionHandler {
     fn handle(&self, request: ActionRequest) -> Result<ActionResult, KernelError> {
@@ -74,6 +113,8 @@ impl ActionHandler for BasicActionHandler {
 
         match request.command {
             ActionCommand::ConfirmLink(command) => {
+                self.policy
+                    .authorize(&request.actor.role, ActionKind::ConfirmLink)?;
                 validate_non_empty("command.confirm_link.link_id", &command.link_id)?;
                 validate_non_empty("command.confirm_link.justification", &command.justification)?;
 
@@ -87,6 +128,8 @@ impl ActionHandler for BasicActionHandler {
                 })
             }
             ActionCommand::RejectLink(command) => {
+                self.policy
+                    .authorize(&request.actor.role, ActionKind::RejectLink)?;
                 validate_non_empty("command.reject_link.link_id", &command.link_id)?;
                 validate_non_empty("command.reject_link.reason", &command.reason)?;
 
@@ -97,6 +140,8 @@ impl ActionHandler for BasicActionHandler {
                 })
             }
             ActionCommand::AddEvidenceToLink(command) => {
+                self.policy
+                    .authorize(&request.actor.role, ActionKind::AddEvidenceToLink)?;
                 validate_non_empty("command.add_evidence_to_link.link_id", &command.link_id)?;
                 validate_non_empty(
                     "command.add_evidence_to_link.evidence_id",
@@ -136,19 +181,19 @@ mod tests {
         RejectLinkCommand,
     };
 
-    fn actor() -> ActionActor {
+    fn actor_with_role(role: &str) -> ActionActor {
         ActionActor {
             actor_id: "reviewer-1".to_string(),
-            role: "reviewer".to_string(),
+            role: role.to_string(),
         }
     }
 
     #[test]
     fn handles_confirm_link_command() {
-        let handler = BasicActionHandler;
+        let handler = BasicActionHandler::default();
         let result = handler
             .handle(ActionRequest {
-                actor: actor(),
+                actor: actor_with_role("reviewer"),
                 command: ActionCommand::ConfirmLink(ConfirmLinkCommand {
                     link_id: "link-1".to_string(),
                     justification: "same defect id".to_string(),
@@ -163,10 +208,10 @@ mod tests {
 
     #[test]
     fn handles_reject_link_command() {
-        let handler = BasicActionHandler;
+        let handler = BasicActionHandler::default();
         let result = handler
             .handle(ActionRequest {
-                actor: actor(),
+                actor: actor_with_role("reviewer"),
                 command: ActionCommand::RejectLink(RejectLinkCommand {
                     link_id: "link-2".to_string(),
                     reason: "insufficient evidence".to_string(),
@@ -181,10 +226,10 @@ mod tests {
 
     #[test]
     fn handles_add_evidence_command() {
-        let handler = BasicActionHandler;
+        let handler = BasicActionHandler::default();
         let result = handler
             .handle(ActionRequest {
-                actor: actor(),
+                actor: actor_with_role("operator"),
                 command: ActionCommand::AddEvidenceToLink(AddEvidenceToLinkCommand {
                     link_id: "link-3".to_string(),
                     evidence_id: "evidence-9".to_string(),
@@ -200,7 +245,7 @@ mod tests {
 
     #[test]
     fn rejects_empty_actor_id() {
-        let handler = BasicActionHandler;
+        let handler = BasicActionHandler::default();
         let error = handler
             .handle(ActionRequest {
                 actor: ActionActor {
@@ -225,10 +270,10 @@ mod tests {
 
     #[test]
     fn rejects_empty_confirm_justification() {
-        let handler = BasicActionHandler;
+        let handler = BasicActionHandler::default();
         let error = handler
             .handle(ActionRequest {
-                actor: actor(),
+                actor: actor_with_role("reviewer"),
                 command: ActionCommand::ConfirmLink(ConfirmLinkCommand {
                     link_id: "link-1".to_string(),
                     justification: "  ".to_string(),
@@ -247,10 +292,10 @@ mod tests {
 
     #[test]
     fn rejects_empty_reject_reason() {
-        let handler = BasicActionHandler;
+        let handler = BasicActionHandler::default();
         let error = handler
             .handle(ActionRequest {
-                actor: actor(),
+                actor: actor_with_role("reviewer"),
                 command: ActionCommand::RejectLink(RejectLinkCommand {
                     link_id: "link-2".to_string(),
                     reason: String::new(),
@@ -269,10 +314,10 @@ mod tests {
 
     #[test]
     fn rejects_empty_evidence_description() {
-        let handler = BasicActionHandler;
+        let handler = BasicActionHandler::default();
         let error = handler
             .handle(ActionRequest {
-                actor: actor(),
+                actor: actor_with_role("operator"),
                 command: ActionCommand::AddEvidenceToLink(AddEvidenceToLinkCommand {
                     link_id: "link-3".to_string(),
                     evidence_id: "evidence-9".to_string(),
@@ -288,5 +333,61 @@ mod tests {
                 message: "must be a non-empty string".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn rejects_forbidden_action_by_role_policy() {
+        let handler = BasicActionHandler::default();
+        let error = handler
+            .handle(ActionRequest {
+                actor: actor_with_role("reviewer"),
+                command: ActionCommand::AddEvidenceToLink(AddEvidenceToLinkCommand {
+                    link_id: "link-3".to_string(),
+                    evidence_id: "evidence-9".to_string(),
+                    description: "attached photo".to_string(),
+                }),
+            })
+            .expect_err("reviewer should not be allowed to add evidence");
+
+        assert_eq!(
+            error,
+            KernelError::Forbidden {
+                role: "reviewer".to_string(),
+                action: ActionKind::AddEvidenceToLink,
+            }
+        );
+    }
+
+    #[test]
+    fn admin_is_allowed_for_all_actions() {
+        let handler = BasicActionHandler::default();
+
+        let confirm = handler.handle(ActionRequest {
+            actor: actor_with_role("admin"),
+            command: ActionCommand::ConfirmLink(ConfirmLinkCommand {
+                link_id: "link-1".to_string(),
+                justification: "approved".to_string(),
+            }),
+        });
+        assert!(confirm.is_ok());
+
+        let reject = handler.handle(ActionRequest {
+            actor: actor_with_role("admin"),
+            command: ActionCommand::RejectLink(RejectLinkCommand {
+                link_id: "link-2".to_string(),
+                reason: "invalid".to_string(),
+            }),
+        });
+        assert!(reject.is_ok());
+
+        let add = handler.handle(ActionRequest {
+            actor: actor_with_role("admin"),
+            command: ActionCommand::AddEvidenceToLink(AddEvidenceToLinkCommand {
+                link_id: "link-3".to_string(),
+                evidence_id: "e-1".to_string(),
+                description: "evidence".to_string(),
+            }),
+        });
+        assert!(add.is_ok());
     }
 }
