@@ -109,4 +109,4 @@ Use it as the source of truth for priorities, and mirror each item into GitHub I
 - [x] Roadmap(C4-1): Provide local bootstrap path for end-to-end MVP run (docs/scripts)
 - [x] Roadmap(C4-2): Add baseline observability (structured logs + key metrics counters)
 - [x] Roadmap(C4-3): Add security/config baseline (.env template + secret handling guidance)
-- [ ] Roadmap(C4-4): Add replay/recovery runbook for common failure modes
+- [x] Roadmap(C4-4): Add replay/recovery runbook for common failure modes
