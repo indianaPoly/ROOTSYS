@@ -81,4 +81,4 @@ Use it as the source of truth for priorities, and mirror each item into GitHub I
 ## B8. UI/App (CAPA App)
 - [x] Roadmap(B8-1): Define IA/UX requirements for single-screen analysis view
 - [x] Roadmap(B8-2): Implement candidate approval/rejection UX with justification capture
-- [ ] Roadmap(B8-3): Add operational dashboards (DLQ volume, approval rate, lead time)
+- [x] Roadmap(B8-3): Add operational dashboards (DLQ volume, approval rate, lead time)
