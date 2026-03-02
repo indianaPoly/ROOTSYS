@@ -7,6 +7,9 @@ OUT_DIR="${ROOTSYS_SMOKE_OUT_DIR:-/tmp/rootsys-smoke}"
 COMPOSE_FILE="$ROOT_DIR/scripts/smoke/docker-compose.yml"
 REST_PORT="${ROOTSYS_SMOKE_REST_PORT:-18080}"
 REST_PID=""
+SMOKE_DB_COUNT="${ROOTSYS_SMOKE_DB_COUNT:-200}"
+SMOKE_REST_COUNT="${ROOTSYS_SMOKE_REST_COUNT:-200}"
+SMOKE_REST_ID_PREFIX="${ROOTSYS_SMOKE_REST_ID_PREFIX:-rest}"
 
 source "$ROOT_DIR/scripts/lib/company_config.sh"
 load_company_config "$ROOT_DIR"
@@ -60,9 +63,17 @@ if ! docker inspect --format='{{.State.Health.Status}}' rootsys-smoke-mysql | gr
 fi
 
 echo "[3/8] Starting local REST mock server"
-python3 "$ROOT_DIR/scripts/smoke/rest_mock_server.py" --port "$REST_PORT" >"$OUT_DIR/rest.mock.log" 2>&1 &
+python3 "$ROOT_DIR/scripts/smoke/rest_mock_server.py" \
+  --port "$REST_PORT" \
+  --count "$SMOKE_REST_COUNT" \
+  --id-prefix "$SMOKE_REST_ID_PREFIX" \
+  >"$OUT_DIR/rest.mock.log" 2>&1 &
 REST_PID="$!"
 sleep 1
+
+echo "[3.5/8] Seeding Postgres/MySQL smoke datasets"
+docker exec rootsys-smoke-postgres psql -U app -d ops -v ON_ERROR_STOP=1 -c "TRUNCATE defect_events; INSERT INTO defect_events(defect_id, lot_id, notes) SELECT 'PG-' || LPAD(g::text, 4, '0'), 'LOT-PG-' || g::text, 'postgres smoke row ' || g::text FROM generate_series(1, ${SMOKE_DB_COUNT}) AS g;" >/dev/null
+docker exec rootsys-smoke-mysql mysql -uapp -psecret ops -e "SET SESSION cte_max_recursion_depth = GREATEST(${SMOKE_DB_COUNT} + 10, 1000); TRUNCATE TABLE defect_events; INSERT INTO defect_events(defect_id, lot_id, notes) WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < ${SMOKE_DB_COUNT}) SELECT CONCAT('MY-', LPAD(n, 4, '0')), CONCAT('LOT-MY-', n), CONCAT('mysql smoke row ', n) FROM seq;" >/dev/null
 
 echo "[4/8] Running REST smoke interface"
 cargo run -p shell -- \
@@ -90,22 +101,38 @@ import pathlib
 import sys
 
 out_dir = pathlib.Path(sys.argv[1])
+db_count = int(os.environ.get("ROOTSYS_SMOKE_DB_COUNT", "200"))
+rest_count = int(os.environ.get("ROOTSYS_SMOKE_REST_COUNT", "200"))
+rest_prefix = os.environ.get("ROOTSYS_SMOKE_REST_ID_PREFIX", "rest")
 
-def parse_ids(raw: str):
-    return [x for x in (item.strip() for item in raw.split(",")) if x]
-
-cases = {
-    "rest.output.jsonl": parse_ids(os.environ["ROOTSYS_SMOKE_EXPECT_REST_IDS"]),
-    "postgres.output.jsonl": parse_ids(os.environ["ROOTSYS_SMOKE_EXPECT_POSTGRES_IDS"]),
-    "mysql.output.jsonl": parse_ids(os.environ["ROOTSYS_SMOKE_EXPECT_MYSQL_IDS"]),
-}
-
-for name, expected in cases.items():
-    path = out_dir / name
+def ids_from_jsonl(path: pathlib.Path):
     lines = [line for line in path.read_text().splitlines() if line.strip()]
-    ids = [json.loads(line)["record_id"] for line in lines]
-    if ids != expected:
-        raise SystemExit(f"unexpected record IDs for {name}: {ids} != {expected}")
+    return [json.loads(line)["record_id"] for line in lines]
+
+rest_ids = ids_from_jsonl(out_dir / "rest.output.jsonl")
+postgres_ids = ids_from_jsonl(out_dir / "postgres.output.jsonl")
+mysql_ids = ids_from_jsonl(out_dir / "mysql.output.jsonl")
+
+if len(rest_ids) != rest_count:
+    raise SystemExit(f"unexpected REST record count: {len(rest_ids)} != {rest_count}")
+if len(postgres_ids) != db_count:
+    raise SystemExit(f"unexpected Postgres record count: {len(postgres_ids)} != {db_count}")
+if len(mysql_ids) != db_count:
+    raise SystemExit(f"unexpected MySQL record count: {len(mysql_ids)} != {db_count}")
+
+if rest_ids[0] != f"{rest_prefix}-0001" or rest_ids[-1] != f"{rest_prefix}-{rest_count:04d}":
+    raise SystemExit("unexpected REST record_id boundaries")
+if postgres_ids[0] != "PG-0001|LOT-PG-1" or postgres_ids[-1] != f"PG-{db_count:04d}|LOT-PG-{db_count}":
+    raise SystemExit("unexpected Postgres record_id boundaries")
+if mysql_ids[0] != "MY-0001|LOT-MY-1" or mysql_ids[-1] != f"MY-{db_count:04d}|LOT-MY-{db_count}":
+    raise SystemExit("unexpected MySQL record_id boundaries")
+
+if len(set(rest_ids)) != rest_count:
+    raise SystemExit("REST record_id contains duplicates")
+if len(set(postgres_ids)) != db_count:
+    raise SystemExit("Postgres record_id contains duplicates")
+if len(set(mysql_ids)) != db_count:
+    raise SystemExit("MySQL record_id contains duplicates")
 
 print("record_id assertions passed")
 PY

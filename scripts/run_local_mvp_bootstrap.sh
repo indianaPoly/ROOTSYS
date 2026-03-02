@@ -9,10 +9,13 @@ source "$ROOT_DIR/scripts/lib/company_config.sh"
 load_company_config "$ROOT_DIR"
 validate_company_config
 
+MES_COUNT="${ROOTSYS_MES_ROW_COUNT:-200}"
+QMS_COUNT="${ROOTSYS_QMS_ROW_COUNT:-200}"
+
 mkdir -p "$OUT_DIR"
 
 echo "[1/6] Creating sample fixture databases"
-python3 "$ROOT_DIR/scripts/create_sample_dbs.py"
+python3 "$ROOT_DIR/scripts/create_sample_dbs.py" --mes-count "$MES_COUNT" --qms-count "$QMS_COUNT"
 
 echo "[2/6] Running MES sqlite interface"
 cargo run -p shell -- \

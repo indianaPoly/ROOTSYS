@@ -1,3 +1,4 @@
+import argparse
 import pathlib
 import sqlite3
 
@@ -6,7 +7,7 @@ DB_DIR = BASE_DIR / "tests" / "fixtures" / "db"
 DB_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def create_mes_db(path: pathlib.Path) -> None:
+def create_mes_db(path: pathlib.Path, count: int) -> None:
     conn = sqlite3.connect(path)
     cur = conn.cursor()
     cur.execute(
@@ -31,28 +32,21 @@ def create_mes_db(path: pathlib.Path) -> None:
         """,
         [
             (
-                "DEF-1001",
-                "LOT-77",
-                "EQ-01",
-                "2026-02-14T09:15:00Z",
-                "SCRATCH",
-                "surface scratch on batch",
-            ),
-            (
-                "DEF-1002",
-                "LOT-78",
-                "EQ-02",
-                "2026-02-14T09:45:00Z",
-                "CRACK",
-                "micro crack detected",
-            ),
+                f"DEF-{1000 + idx}",
+                f"LOT-{76 + idx}",
+                f"EQ-{(idx % 12) + 1:02d}",
+                f"2026-02-14T09:{(idx % 60):02d}:00Z",
+                "CRACK" if idx % 2 == 0 else "SCRATCH",
+                f"generated mes row {idx}",
+            )
+            for idx in range(1, count + 1)
         ],
     )
     conn.commit()
     conn.close()
 
 
-def create_qms_db(path: pathlib.Path) -> None:
+def create_qms_db(path: pathlib.Path, count: int) -> None:
     conn = sqlite3.connect(path)
     cur = conn.cursor()
     cur.execute(
@@ -76,19 +70,13 @@ def create_qms_db(path: pathlib.Path) -> None:
         """,
         [
             (
-                "CLAIM-9001",
-                "DEF-1001",
-                3,
-                "customer reported scratch",
-                "2026-02-14T10:05:00Z",
-            ),
-            (
-                "CLAIM-9002",
-                "DEF-1003",
-                2,
-                "edge defect",
-                "2026-02-14T10:12:00Z",
-            ),
+                f"CLAIM-{9000 + idx}",
+                f"DEF-{1000 + ((idx - 1) % max(1, count)) + 1}",
+                (idx % 5) + 1,
+                f"generated qms row {idx}",
+                f"2026-02-14T10:{(idx % 60):02d}:00Z",
+            )
+            for idx in range(1, count + 1)
         ],
     )
     conn.commit()
@@ -96,8 +84,16 @@ def create_qms_db(path: pathlib.Path) -> None:
 
 
 def main() -> None:
-    create_mes_db(DB_DIR / "mes.db")
-    create_qms_db(DB_DIR / "qms.db")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mes-count", type=int, default=2)
+    parser.add_argument("--qms-count", type=int, default=2)
+    args = parser.parse_args()
+
+    if args.mes_count <= 0 or args.qms_count <= 0:
+        raise SystemExit("--mes-count and --qms-count must be > 0")
+
+    create_mes_db(DB_DIR / "mes.db", args.mes_count)
+    create_qms_db(DB_DIR / "qms.db", args.qms_count)
 
 
 if __name__ == "__main__":

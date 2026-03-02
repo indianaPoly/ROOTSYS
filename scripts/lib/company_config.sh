@@ -7,6 +7,35 @@ load_company_config() {
   local profile="${ROOTSYS_COMPANY_PROFILE:-default}"
   local default_config="$root_dir/config/companies/${profile}.env"
   local config_file="${ROOTSYS_CONFIG_FILE:-$default_config}"
+  local configurable_keys=(
+    ROOTSYS_CONTRACT_REGISTRY
+    ROOTSYS_INTERFACE_MES
+    ROOTSYS_INTERFACE_QMS
+    ROOTSYS_INTERFACE_STREAM
+    ROOTSYS_INTERFACE_REST_SMOKE
+    ROOTSYS_INTERFACE_POSTGRES_SMOKE
+    ROOTSYS_INTERFACE_MYSQL_SMOKE
+    ROOTSYS_MES_ROW_COUNT
+    ROOTSYS_QMS_ROW_COUNT
+    ROOTSYS_SMOKE_DB_COUNT
+    ROOTSYS_SMOKE_REST_COUNT
+    ROOTSYS_SMOKE_REST_ID_PREFIX
+    ROOTSYS_COMPLEX_STREAM_RECORD_COUNT
+    ROOTSYS_COMPLEX_INTERVAL_RUNS
+    ROOTSYS_COMPLEX_REPLAY_INPUT_COUNT
+    ROOTSYS_COMPLEX_REPLAY_INTERFACE_NAME
+    ROOTSYS_COMPLEX_REPLAY_INTERFACE_VERSION
+    ROOTSYS_UI_DIR
+  )
+  local preloaded_keys=()
+  local preloaded_values=()
+
+  for key in "${configurable_keys[@]}"; do
+    if [[ "${!key+x}" == "x" ]]; then
+      preloaded_keys+=("$key")
+      preloaded_values+=("${!key}")
+    fi
+  done
 
   if [[ -f "$config_file" ]]; then
     set -a
@@ -16,6 +45,11 @@ load_company_config() {
   else
     export ROOTSYS_ACTIVE_CONFIG_FILE=""
   fi
+
+  local idx
+  for idx in "${!preloaded_keys[@]}"; do
+    export "${preloaded_keys[$idx]}=${preloaded_values[$idx]}"
+  done
 
   export ROOTSYS_CONTRACT_REGISTRY="${ROOTSYS_CONTRACT_REGISTRY:-$root_dir/system/contracts/reference/allowlist.json}"
 
@@ -27,9 +61,14 @@ load_company_config() {
   export ROOTSYS_INTERFACE_POSTGRES_SMOKE="${ROOTSYS_INTERFACE_POSTGRES_SMOKE:-$root_dir/tests/fixtures/interfaces/postgres.smoke.json}"
   export ROOTSYS_INTERFACE_MYSQL_SMOKE="${ROOTSYS_INTERFACE_MYSQL_SMOKE:-$root_dir/tests/fixtures/interfaces/mysql.smoke.json}"
 
-  export ROOTSYS_SMOKE_EXPECT_REST_IDS="${ROOTSYS_SMOKE_EXPECT_REST_IDS:-rest-1001,rest-1002}"
-  export ROOTSYS_SMOKE_EXPECT_POSTGRES_IDS="${ROOTSYS_SMOKE_EXPECT_POSTGRES_IDS:-PG-1001|LOT-PG-1,PG-1002|LOT-PG-2}"
-  export ROOTSYS_SMOKE_EXPECT_MYSQL_IDS="${ROOTSYS_SMOKE_EXPECT_MYSQL_IDS:-MY-1001|LOT-MY-1,MY-1002|LOT-MY-2}"
+  export ROOTSYS_MES_ROW_COUNT="${ROOTSYS_MES_ROW_COUNT:-200}"
+  export ROOTSYS_QMS_ROW_COUNT="${ROOTSYS_QMS_ROW_COUNT:-200}"
+  export ROOTSYS_SMOKE_DB_COUNT="${ROOTSYS_SMOKE_DB_COUNT:-200}"
+  export ROOTSYS_SMOKE_REST_COUNT="${ROOTSYS_SMOKE_REST_COUNT:-200}"
+  export ROOTSYS_SMOKE_REST_ID_PREFIX="${ROOTSYS_SMOKE_REST_ID_PREFIX:-rest}"
+  export ROOTSYS_COMPLEX_STREAM_RECORD_COUNT="${ROOTSYS_COMPLEX_STREAM_RECORD_COUNT:-300}"
+  export ROOTSYS_COMPLEX_INTERVAL_RUNS="${ROOTSYS_COMPLEX_INTERVAL_RUNS:-2}"
+  export ROOTSYS_COMPLEX_REPLAY_INPUT_COUNT="${ROOTSYS_COMPLEX_REPLAY_INPUT_COUNT:-50}"
 
   export ROOTSYS_COMPLEX_REPLAY_INTERFACE_NAME="${ROOTSYS_COMPLEX_REPLAY_INTERFACE_NAME:-mes}"
   export ROOTSYS_COMPLEX_REPLAY_INTERFACE_VERSION="${ROOTSYS_COMPLEX_REPLAY_INTERFACE_VERSION:-v1}"
@@ -58,6 +97,24 @@ validate_company_config() {
   for file in "${required_files[@]}"; do
     if [[ ! -f "$file" ]]; then
       echo "required config file not found: $file" >&2
+      missing=1
+    fi
+  done
+
+  local numeric_keys=(
+    ROOTSYS_MES_ROW_COUNT
+    ROOTSYS_QMS_ROW_COUNT
+    ROOTSYS_SMOKE_DB_COUNT
+    ROOTSYS_SMOKE_REST_COUNT
+    ROOTSYS_COMPLEX_STREAM_RECORD_COUNT
+    ROOTSYS_COMPLEX_INTERVAL_RUNS
+    ROOTSYS_COMPLEX_REPLAY_INPUT_COUNT
+  )
+
+  for key in "${numeric_keys[@]}"; do
+    local value="${!key}"
+    if [[ ! "$value" =~ ^[0-9]+$ ]] || [[ "$value" -le 0 ]]; then
+      echo "invalid numeric config: $key=$value (must be positive integer)" >&2
       missing=1
     fi
   done
