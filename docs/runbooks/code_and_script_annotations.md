@@ -35,6 +35,7 @@
 
 ### `scripts/run_service_smoke_tests.sh`
 - 목적: REST/Postgres/MySQL 실제 서비스 기반 smoke 테스트를 실행하고 `record_id` 정확성 검증.
+- 규모: `ROOTSYS_SMOKE_DB_COUNT`, `ROOTSYS_SMOKE_REST_COUNT`로 대량 데이터 시나리오 검증 가능.
 - 출력 아티팩트:
   - `/tmp/rootsys-smoke/rest.output.jsonl`
   - `/tmp/rootsys-smoke/postgres.output.jsonl`
@@ -62,6 +63,7 @@
 
 ### `scripts/run_complex_pipeline_checks.sh`
 - 목적: 단순 smoke를 넘어 스케줄링/리플레이/제품흐름/병합 시나리오를 실검증.
+- 규모: `ROOTSYS_COMPLEX_STREAM_RECORD_COUNT`, `ROOTSYS_COMPLEX_INTERVAL_RUNS`, `ROOTSYS_COMPLEX_REPLAY_INPUT_COUNT`로 데이터량/반복횟수 조절.
 - 핵심 검증:
   - interval mode 2회 실행 결과 건수 검증
   - product-flow 아티팩트 생성 검증

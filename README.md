@@ -170,6 +170,11 @@ Validate profile paths before full run:
 bash scripts/validate_company_profile.sh <company-name>
 ```
 
+Scale-up test example:
+```bash
+ROOTSYS_SMOKE_DB_COUNT=500 ROOTSYS_SMOKE_REST_COUNT=500 ROOTSYS_COMPLEX_STREAM_RECORD_COUNT=1000 bash scripts/run_all_checks_and_prepare_ui.sh <company-name>
+```
+
 Profile file location:
 - `config/companies/<profile>.env`
 
