@@ -8,6 +8,26 @@
 기본 제공:
 - `config/companies/default.env`
 - `config/companies/acme.sample.env`
+- `config/companies/first-customer.sample.env`
+
+## 신규 고객 프로파일 생성
+
+```bash
+bash scripts/create_company_profile.sh <company-name>
+```
+
+예시:
+```bash
+bash scripts/create_company_profile.sh hanul-motors
+```
+
+생성 파일:
+- `config/companies/hanul-motors.env`
+
+프로파일 수정 후 검증:
+```bash
+bash scripts/validate_company_profile.sh hanul-motors
+```
 
 ## 설정 항목
 - 계약 레지스트리: `ROOTSYS_CONTRACT_REGISTRY`

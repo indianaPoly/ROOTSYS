@@ -160,6 +160,16 @@ bash scripts/run_all_checks_and_prepare_ui.sh
 bash scripts/run_all_checks_and_prepare_ui.sh default
 ```
 
+Create a new customer profile:
+```bash
+bash scripts/create_company_profile.sh <company-name>
+```
+
+Validate profile paths before full run:
+```bash
+bash scripts/validate_company_profile.sh <company-name>
+```
+
 Profile file location:
 - `config/companies/<profile>.env`
 

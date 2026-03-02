@@ -22,6 +22,15 @@
   - `validate_company_config()`: 계약/인터페이스 필수 파일 존재 여부 검증
 - 경로 처리: 상대 경로를 프로젝트 루트 기준 절대 경로로 정규화.
 
+### `scripts/create_company_profile.sh`
+- 목적: 신규 제조사 온보딩 시 `config/companies/<name>.env`를 템플릿에서 생성.
+- 입력: 프로파일 이름(소문자/숫자/하이픈).
+- 출력: 새 회사 전용 `.env` 프로파일 파일.
+
+### `scripts/validate_company_profile.sh`
+- 목적: 선택한 프로파일을 로드하고 계약/인터페이스 경로 존재 여부를 실행 전 검증.
+- 출력: 활성 config 파일 경로 및 resolved 인터페이스 경로 목록.
+
 ## 2) Service smoke tests
 
 ### `scripts/run_service_smoke_tests.sh`
