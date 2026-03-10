@@ -1,12 +1,42 @@
-target
+############################
+# Rust build artifacts
+############################
+target/
+
+############################
+# OS / Editor artifacts
+############################
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*.tmp
+*.log
 
 # Frontend local artifacts
 ui/.next/
 ui/node_modules/
 ui/.npm-cache/
 ui/tsconfig.tsbuildinfo
+ui/.turbo/
+ui/out/
+ui/dist/
+ui/coverage/
+ui/.vercel/
+ui/.eslintcache
 
 # Local environment and secrets
 .env
 .env.*
 !.env.example
+
+############################
+# Python local artifacts
+############################
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
