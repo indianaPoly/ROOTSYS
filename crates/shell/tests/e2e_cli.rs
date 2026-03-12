@@ -3,6 +3,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use kernel::{
+    ActionActor, ActionAuditApiService, ActionCommand, ActionRequest, AddEvidenceToLinkCommand,
+    AuditQuery, BasicActionHandler, CandidateLinkState, ConfirmLinkCommand, RejectLinkCommand,
+    SqliteAuditLogStore, SqliteCandidateStateStore,
+};
+use linkage::{LinkSeed, PrefixSimilarityProbabilisticGenerator, ProbabilisticLinkGenerator};
+
 #[test]
 fn db_interface_run_emits_output_and_metrics_log() {
     let temp_dir = temp_test_dir("db_run");
@@ -212,6 +219,234 @@ fn local_mvp_fixture_scenario_outputs_expected_records_and_merge() {
     );
 }
 
+#[test]
+fn whitepaper_vertical_slice_supports_confirm_reject_and_evidence_paths() {
+    let temp_dir = temp_test_dir("whitepaper_vertical_slice");
+    let interface_path = temp_dir.join("slice.interface.json");
+    let input_path = temp_dir.join("slice.input.jsonl");
+    let output_path = temp_dir.join("slice.output.jsonl");
+    let product_output_dir = temp_dir.join("slice.product");
+
+    fs::write(
+        &input_path,
+        [
+            serde_json::json!({
+                "event_id": "evt-defect-1",
+                "defect_id": "D-100",
+                "lot_id": "LOT-1",
+                "line": "L1",
+                "equipment_id": "EQ-1"
+            })
+            .to_string(),
+            serde_json::json!({
+                "event_id": "evt-cause-1",
+                "defect_id": "D-100",
+                "cause_id": "C-100",
+                "cause": "temperature_drift",
+                "confidence": 0.82,
+                "lot_id": "LOT-1",
+                "line": "L1",
+                "equipment_id": "EQ-1"
+            })
+            .to_string(),
+            serde_json::json!({
+                "event_id": "evt-evidence-1",
+                "defect_id": "D-100",
+                "evidence_id": "E-100",
+                "evidence_type": "log",
+                "lot_id": "LOT-1",
+                "line": "L1",
+                "equipment_id": "EQ-1"
+            })
+            .to_string(),
+        ]
+        .join("\n")
+            + "\n",
+    )
+    .expect("failed to write vertical-slice input fixture");
+
+    let interface = serde_json::json!({
+        "name": "mes-stream",
+        "version": "v1",
+        "driver": {
+            "kind": "jsonl"
+        },
+        "payload_format": "json",
+        "record_id_policy": "hash_fallback",
+        "record_id_paths": ["/event_id"]
+    });
+    fs::write(
+        &interface_path,
+        serde_json::to_string_pretty(&interface).expect("slice interface json"),
+    )
+    .expect("failed to write vertical-slice interface");
+
+    let run = run_shell(&[
+        "--interface".to_string(),
+        path_to_string(&interface_path),
+        "--input".to_string(),
+        path_to_string(&input_path),
+        "--contract-registry".to_string(),
+        path_to_string(&repo_root().join("system/contracts/reference/allowlist.json")),
+        "--output".to_string(),
+        path_to_string(&output_path),
+        "--enable-product-flow".to_string(),
+        "--product-output-dir".to_string(),
+        path_to_string(&product_output_dir),
+    ]);
+    assert!(
+        run.status.success(),
+        "vertical-slice shell run failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let deterministic_links = read_jsonl(&product_output_dir.join("links.r1.jsonl"));
+    let candidate_links = read_jsonl(&product_output_dir.join("links.r2.jsonl"));
+    let ontology_objects = read_jsonl(&product_output_dir.join("ontology.objects.jsonl"));
+    let action_results = read_jsonl(&product_output_dir.join("actions.results.jsonl"));
+
+    assert!(
+        !deterministic_links.is_empty(),
+        "deterministic links should be produced for confirm path"
+    );
+    assert!(
+        action_results
+            .iter()
+            .any(|line| line["action_kind"].as_str() == Some("ConfirmLink")),
+        "product flow should include confirm action result"
+    );
+
+    let deterministic_link_id = deterministic_links[0]["link_id"]
+        .as_str()
+        .expect("deterministic link_id should exist")
+        .to_string();
+    let candidate_link_id = if let Some(link_id) = candidate_links
+        .first()
+        .and_then(|line| line["link_id"].as_str())
+        .map(ToString::to_string)
+    {
+        link_id
+    } else {
+        let left_object_id = ontology_objects
+            .first()
+            .and_then(|line| line["object_id"].as_str())
+            .unwrap_or("defect-obj")
+            .to_string();
+        let right_object_id = ontology_objects
+            .get(1)
+            .and_then(|line| line["object_id"].as_str())
+            .unwrap_or("cause-obj")
+            .to_string();
+
+        let fallback_candidates = PrefixSimilarityProbabilisticGenerator {
+            relation: "candidate_of".to_string(),
+            min_score: 0.2,
+        }
+        .generate_candidates(&[LinkSeed {
+            left_object_id,
+            right_object_id,
+            left_record_id: "evt-defect-1".to_string(),
+            right_record_id: "evt-defect-2".to_string(),
+            left_source: "mes-stream".to_string(),
+            right_source: "mes-stream".to_string(),
+            left_strong_keys: Default::default(),
+            right_strong_keys: Default::default(),
+            left_attributes: Default::default(),
+            right_attributes: Default::default(),
+            left_event_unix_ms: Some(1_706_999_000_000),
+            right_event_unix_ms: Some(1_706_999_000_001),
+        }]);
+        assert!(
+            !fallback_candidates.is_empty(),
+            "fallback probabilistic candidate should be generated"
+        );
+        fallback_candidates[0].link_id.clone()
+    };
+
+    let audit_store = SqliteAuditLogStore::new(product_output_dir.join("actions.audit.sqlite"))
+        .expect("audit store should initialize");
+    let candidate_store =
+        SqliteCandidateStateStore::new(product_output_dir.join("candidate.state.sqlite"))
+            .expect("candidate state store should initialize");
+    let service =
+        ActionAuditApiService::new(BasicActionHandler::default(), audit_store, candidate_store);
+
+    let add_evidence = service
+        .execute(
+            ActionRequest {
+                actor: ActionActor {
+                    actor_id: "operator-1".to_string(),
+                    role: "operator".to_string(),
+                },
+                command: ActionCommand::AddEvidenceToLink(AddEvidenceToLinkCommand {
+                    link_id: candidate_link_id.clone(),
+                    evidence_id: "E-200".to_string(),
+                    description: "operator attached additional evidence".to_string(),
+                }),
+            },
+            1_706_999_000_001,
+        )
+        .expect("add evidence path should succeed");
+    assert_eq!(add_evidence.current_state, CandidateLinkState::InReview);
+
+    let reject = service
+        .execute(
+            ActionRequest {
+                actor: ActionActor {
+                    actor_id: "reviewer-1".to_string(),
+                    role: "reviewer".to_string(),
+                },
+                command: ActionCommand::RejectLink(RejectLinkCommand {
+                    link_id: candidate_link_id.clone(),
+                    reason: "insufficient causal confidence after review".to_string(),
+                }),
+            },
+            1_706_999_000_002,
+        )
+        .expect("reject path should succeed");
+    assert_eq!(reject.current_state, CandidateLinkState::Rejected);
+
+    let confirm = service
+        .execute(
+            ActionRequest {
+                actor: ActionActor {
+                    actor_id: "reviewer-2".to_string(),
+                    role: "reviewer".to_string(),
+                },
+                command: ActionCommand::ConfirmLink(ConfirmLinkCommand {
+                    link_id: deterministic_link_id.clone(),
+                    justification: "deterministic strong key match accepted".to_string(),
+                }),
+            },
+            1_706_999_000_003,
+        )
+        .expect("confirm path should succeed");
+    assert_eq!(confirm.current_state, CandidateLinkState::Confirmed);
+
+    let candidate_history = service
+        .query_candidate_history(&candidate_link_id, 10)
+        .expect("candidate history query should succeed");
+    assert!(candidate_history
+        .iter()
+        .any(|transition| transition.to_state == CandidateLinkState::InReview));
+    assert!(candidate_history
+        .iter()
+        .any(|transition| transition.to_state == CandidateLinkState::Rejected));
+
+    let audit_events = service
+        .query_audit(AuditQuery {
+            link_id: Some(candidate_link_id),
+            limit: 20,
+        })
+        .expect("audit query should succeed");
+    assert!(audit_events
+        .iter()
+        .any(|event| event.action_kind == kernel::ActionKind::AddEvidenceToLink));
+    assert!(audit_events
+        .iter()
+        .any(|event| event.action_kind == kernel::ActionKind::RejectLink));
+}
+
 fn run_shell(args: &[String]) -> Output {
     if let Ok(binary_path) = std::env::var("CARGO_BIN_EXE_shell") {
         return Command::new(binary_path)
@@ -305,4 +540,14 @@ fn temp_test_dir(name: &str) -> PathBuf {
 
 fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().to_string()
+}
+
+fn read_jsonl(path: &Path) -> Vec<serde_json::Value> {
+    let content = fs::read_to_string(path)
+        .unwrap_or_else(|_| panic!("expected output file: {}", path.display()));
+    content
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("jsonl line should parse"))
+        .collect()
 }
