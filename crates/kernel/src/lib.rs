@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -54,6 +55,81 @@ pub struct ActionResult {
     pub action_kind: ActionKind,
     pub link_id: String,
     pub summary: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateLinkState {
+    Candidate,
+    InReview,
+    Confirmed,
+    Rejected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CandidateStateTransition {
+    pub link_id: String,
+    pub action_kind: ActionKind,
+    pub from_state: CandidateLinkState,
+    pub to_state: CandidateLinkState,
+    pub actor_id: String,
+    pub actor_role: String,
+    pub transitioned_at_unix_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CandidateLifecycleError {
+    InvalidTransition {
+        action: ActionKind,
+        from: CandidateLinkState,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CandidateLifecycleMachine;
+
+impl CandidateLifecycleMachine {
+    pub fn next_state(
+        &self,
+        current: CandidateLinkState,
+        action: ActionKind,
+    ) -> Result<CandidateLinkState, CandidateLifecycleError> {
+        match action {
+            ActionKind::ConfirmLink => match current {
+                CandidateLinkState::Candidate | CandidateLinkState::InReview => {
+                    Ok(CandidateLinkState::Confirmed)
+                }
+                CandidateLinkState::Confirmed | CandidateLinkState::Rejected => {
+                    Err(CandidateLifecycleError::InvalidTransition {
+                        action,
+                        from: current,
+                    })
+                }
+            },
+            ActionKind::RejectLink => match current {
+                CandidateLinkState::Candidate | CandidateLinkState::InReview => {
+                    Ok(CandidateLinkState::Rejected)
+                }
+                CandidateLinkState::Confirmed | CandidateLinkState::Rejected => {
+                    Err(CandidateLifecycleError::InvalidTransition {
+                        action,
+                        from: current,
+                    })
+                }
+            },
+            ActionKind::AddEvidenceToLink => match current {
+                CandidateLinkState::Candidate | CandidateLinkState::InReview => {
+                    Ok(CandidateLinkState::InReview)
+                }
+                CandidateLinkState::Confirmed | CandidateLinkState::Rejected => {
+                    Err(CandidateLifecycleError::InvalidTransition {
+                        action,
+                        from: current,
+                    })
+                }
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -225,9 +301,513 @@ impl From<rusqlite::Error> for AuditError {
     }
 }
 
+#[derive(Debug)]
+pub enum CandidateStateStoreError {
+    Sqlite(rusqlite::Error),
+    Validation(String),
+    Poisoned(String),
+}
+
+impl std::fmt::Display for CandidateStateStoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CandidateStateStoreError::Sqlite(error) => write!(f, "sqlite error: {}", error),
+            CandidateStateStoreError::Validation(message) => {
+                write!(f, "validation error: {}", message)
+            }
+            CandidateStateStoreError::Poisoned(message) => {
+                write!(f, "mutex poisoned: {}", message)
+            }
+        }
+    }
+}
+
+impl std::error::Error for CandidateStateStoreError {}
+
+impl From<rusqlite::Error> for CandidateStateStoreError {
+    fn from(value: rusqlite::Error) -> Self {
+        CandidateStateStoreError::Sqlite(value)
+    }
+}
+
+pub trait CandidateStateStore {
+    fn get_state(&self, link_id: &str) -> Result<CandidateLinkState, CandidateStateStoreError>;
+    fn set_state(
+        &self,
+        link_id: &str,
+        state: CandidateLinkState,
+        updated_at_unix_ms: i64,
+    ) -> Result<(), CandidateStateStoreError>;
+    fn append_transition(
+        &self,
+        transition: &CandidateStateTransition,
+    ) -> Result<(), CandidateStateStoreError>;
+    fn query_transitions(
+        &self,
+        link_id: &str,
+        limit: usize,
+    ) -> Result<Vec<CandidateStateTransition>, CandidateStateStoreError>;
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct InMemoryCandidateStateStore {
+    states: Arc<Mutex<std::collections::BTreeMap<String, CandidateLinkState>>>,
+    transitions: Arc<Mutex<Vec<CandidateStateTransition>>>,
+}
+
+impl CandidateStateStore for InMemoryCandidateStateStore {
+    fn get_state(&self, link_id: &str) -> Result<CandidateLinkState, CandidateStateStoreError> {
+        let states = self
+            .states
+            .lock()
+            .map_err(|error| CandidateStateStoreError::Poisoned(error.to_string()))?;
+        Ok(*states
+            .get(link_id)
+            .unwrap_or(&CandidateLinkState::Candidate))
+    }
+
+    fn set_state(
+        &self,
+        link_id: &str,
+        state: CandidateLinkState,
+        _updated_at_unix_ms: i64,
+    ) -> Result<(), CandidateStateStoreError> {
+        if link_id.trim().is_empty() {
+            return Err(CandidateStateStoreError::Validation(
+                "link_id must be a non-empty string".to_string(),
+            ));
+        }
+
+        let mut states = self
+            .states
+            .lock()
+            .map_err(|error| CandidateStateStoreError::Poisoned(error.to_string()))?;
+        states.insert(link_id.to_string(), state);
+        Ok(())
+    }
+
+    fn append_transition(
+        &self,
+        transition: &CandidateStateTransition,
+    ) -> Result<(), CandidateStateStoreError> {
+        let mut transitions = self
+            .transitions
+            .lock()
+            .map_err(|error| CandidateStateStoreError::Poisoned(error.to_string()))?;
+        transitions.push(transition.clone());
+        Ok(())
+    }
+
+    fn query_transitions(
+        &self,
+        link_id: &str,
+        limit: usize,
+    ) -> Result<Vec<CandidateStateTransition>, CandidateStateStoreError> {
+        if limit == 0 {
+            return Err(CandidateStateStoreError::Validation(
+                "limit must be > 0".to_string(),
+            ));
+        }
+
+        let transitions = self
+            .transitions
+            .lock()
+            .map_err(|error| CandidateStateStoreError::Poisoned(error.to_string()))?;
+
+        let mut result = transitions
+            .iter()
+            .rev()
+            .filter(|transition| transition.link_id == link_id)
+            .take(limit)
+            .cloned()
+            .collect::<Vec<_>>();
+        result.shrink_to_fit();
+        Ok(result)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SqliteCandidateStateStore {
+    db_path: String,
+}
+
+impl SqliteCandidateStateStore {
+    pub fn new(path: impl AsRef<Path>) -> Result<Self, CandidateStateStoreError> {
+        let db_path = path.as_ref().to_string_lossy().to_string();
+        let connection = Connection::open(&db_path)?;
+        Self::initialize(&connection)?;
+        Ok(Self { db_path })
+    }
+
+    fn connect(&self) -> Result<Connection, CandidateStateStoreError> {
+        let connection = Connection::open(&self.db_path)?;
+        Self::initialize(&connection)?;
+        Ok(connection)
+    }
+
+    fn initialize(connection: &Connection) -> Result<(), CandidateStateStoreError> {
+        connection.execute_batch(
+            "
+            CREATE TABLE IF NOT EXISTS candidate_link_state (
+                link_id TEXT PRIMARY KEY,
+                state TEXT NOT NULL,
+                updated_at_unix_ms INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS candidate_state_transitions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                link_id TEXT NOT NULL,
+                action_kind TEXT NOT NULL,
+                from_state TEXT NOT NULL,
+                to_state TEXT NOT NULL,
+                actor_id TEXT NOT NULL,
+                actor_role TEXT NOT NULL,
+                transitioned_at_unix_ms INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_candidate_state_transitions_link_id
+                ON candidate_state_transitions (link_id, id DESC);
+            ",
+        )?;
+        Ok(())
+    }
+}
+
+impl CandidateStateStore for SqliteCandidateStateStore {
+    fn get_state(&self, link_id: &str) -> Result<CandidateLinkState, CandidateStateStoreError> {
+        if link_id.trim().is_empty() {
+            return Err(CandidateStateStoreError::Validation(
+                "link_id must be a non-empty string".to_string(),
+            ));
+        }
+
+        let connection = self.connect()?;
+        let value: Option<String> = connection
+            .query_row(
+                "SELECT state FROM candidate_link_state WHERE link_id = ?1",
+                params![link_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        if let Some(value) = value {
+            parse_candidate_state(&value)
+                .map_err(|message| CandidateStateStoreError::Validation(message.to_string()))
+        } else {
+            Ok(CandidateLinkState::Candidate)
+        }
+    }
+
+    fn set_state(
+        &self,
+        link_id: &str,
+        state: CandidateLinkState,
+        updated_at_unix_ms: i64,
+    ) -> Result<(), CandidateStateStoreError> {
+        if link_id.trim().is_empty() {
+            return Err(CandidateStateStoreError::Validation(
+                "link_id must be a non-empty string".to_string(),
+            ));
+        }
+
+        let connection = self.connect()?;
+        connection.execute(
+            "
+            INSERT INTO candidate_link_state (link_id, state, updated_at_unix_ms)
+            VALUES (?1, ?2, ?3)
+            ON CONFLICT(link_id)
+            DO UPDATE SET state = excluded.state, updated_at_unix_ms = excluded.updated_at_unix_ms
+            ",
+            params![link_id, format_candidate_state(state), updated_at_unix_ms],
+        )?;
+
+        Ok(())
+    }
+
+    fn append_transition(
+        &self,
+        transition: &CandidateStateTransition,
+    ) -> Result<(), CandidateStateStoreError> {
+        let connection = self.connect()?;
+        connection.execute(
+            "
+            INSERT INTO candidate_state_transitions (
+                link_id,
+                action_kind,
+                from_state,
+                to_state,
+                actor_id,
+                actor_role,
+                transitioned_at_unix_ms
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            ",
+            params![
+                transition.link_id,
+                format_action_kind(transition.action_kind),
+                format_candidate_state(transition.from_state),
+                format_candidate_state(transition.to_state),
+                transition.actor_id,
+                transition.actor_role,
+                transition.transitioned_at_unix_ms,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn query_transitions(
+        &self,
+        link_id: &str,
+        limit: usize,
+    ) -> Result<Vec<CandidateStateTransition>, CandidateStateStoreError> {
+        if link_id.trim().is_empty() {
+            return Err(CandidateStateStoreError::Validation(
+                "link_id must be a non-empty string".to_string(),
+            ));
+        }
+        if limit == 0 {
+            return Err(CandidateStateStoreError::Validation(
+                "limit must be > 0".to_string(),
+            ));
+        }
+
+        let connection = self.connect()?;
+        let limit = i64::try_from(limit)
+            .map_err(|_| CandidateStateStoreError::Validation("limit is too large".to_string()))?;
+
+        let mut statement = connection.prepare(
+            "
+            SELECT link_id, action_kind, from_state, to_state, actor_id, actor_role, transitioned_at_unix_ms
+            FROM candidate_state_transitions
+            WHERE link_id = ?1
+            ORDER BY id DESC
+            LIMIT ?2
+            ",
+        )?;
+
+        let mapped = statement.query_map(params![link_id, limit], |row| {
+            let action_kind_value: String = row.get(1)?;
+            let from_state_value: String = row.get(2)?;
+            let to_state_value: String = row.get(3)?;
+
+            let action_kind = parse_action_kind(&action_kind_value).map_err(|message| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    1,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        message,
+                    )),
+                )
+            })?;
+
+            let from_state = parse_candidate_state(&from_state_value).map_err(|message| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    2,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        message,
+                    )),
+                )
+            })?;
+
+            let to_state = parse_candidate_state(&to_state_value).map_err(|message| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    3,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        message,
+                    )),
+                )
+            })?;
+
+            Ok(CandidateStateTransition {
+                link_id: row.get(0)?,
+                action_kind,
+                from_state,
+                to_state,
+                actor_id: row.get(4)?,
+                actor_role: row.get(5)?,
+                transitioned_at_unix_ms: row.get(6)?,
+            })
+        })?;
+
+        Ok(mapped.collect::<Result<Vec<_>, _>>()?)
+    }
+}
+
 pub trait AuditLogStore {
     fn append(&self, event: &AuditEvent) -> Result<(), AuditError>;
     fn query(&self, query: AuditQuery) -> Result<Vec<AuditEvent>, AuditError>;
+}
+
+#[derive(Debug)]
+pub enum ActionApiError {
+    Kernel(KernelError),
+    Audit(AuditError),
+    CandidateState(CandidateStateStoreError),
+    Lifecycle(CandidateLifecycleError),
+    Validation(String),
+}
+
+impl std::fmt::Display for ActionApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ActionApiError::Kernel(error) => write!(f, "kernel error: {:?}", error),
+            ActionApiError::Audit(error) => write!(f, "audit error: {}", error),
+            ActionApiError::CandidateState(error) => {
+                write!(f, "candidate-state error: {}", error)
+            }
+            ActionApiError::Lifecycle(error) => write!(f, "lifecycle error: {:?}", error),
+            ActionApiError::Validation(message) => write!(f, "validation error: {}", message),
+        }
+    }
+}
+
+impl std::error::Error for ActionApiError {}
+
+impl From<KernelError> for ActionApiError {
+    fn from(value: KernelError) -> Self {
+        ActionApiError::Kernel(value)
+    }
+}
+
+impl From<AuditError> for ActionApiError {
+    fn from(value: AuditError) -> Self {
+        ActionApiError::Audit(value)
+    }
+}
+
+impl From<CandidateStateStoreError> for ActionApiError {
+    fn from(value: CandidateStateStoreError) -> Self {
+        ActionApiError::CandidateState(value)
+    }
+}
+
+impl From<CandidateLifecycleError> for ActionApiError {
+    fn from(value: CandidateLifecycleError) -> Self {
+        ActionApiError::Lifecycle(value)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActionExecutionResponse {
+    pub result: ActionResult,
+    pub audit_event_id: i64,
+    pub previous_state: CandidateLinkState,
+    pub current_state: CandidateLinkState,
+}
+
+#[derive(Debug, Clone)]
+pub struct ActionAuditApiService<H, A, S>
+where
+    H: ActionHandler,
+    A: AuditLogStore,
+    S: CandidateStateStore,
+{
+    handler: H,
+    audit_store: A,
+    candidate_state_store: S,
+    lifecycle: CandidateLifecycleMachine,
+}
+
+impl<H, A, S> ActionAuditApiService<H, A, S>
+where
+    H: ActionHandler,
+    A: AuditLogStore,
+    S: CandidateStateStore,
+{
+    pub fn new(handler: H, audit_store: A, candidate_state_store: S) -> Self {
+        Self {
+            handler,
+            audit_store,
+            candidate_state_store,
+            lifecycle: CandidateLifecycleMachine,
+        }
+    }
+
+    pub fn execute(
+        &self,
+        request: ActionRequest,
+        created_at_unix_ms: i64,
+    ) -> Result<ActionExecutionResponse, ActionApiError> {
+        let link_id = command_link_id(&request.command)
+            .ok_or_else(|| ActionApiError::Validation("link_id must be provided".to_string()))?
+            .to_string();
+
+        let previous_state = self.candidate_state_store.get_state(&link_id)?;
+        let result = self.handler.handle(request.clone())?;
+        let current_state = self
+            .lifecycle
+            .next_state(previous_state, result.action_kind)?;
+
+        self.candidate_state_store
+            .set_state(&link_id, current_state, created_at_unix_ms)?;
+        self.candidate_state_store
+            .append_transition(&CandidateStateTransition {
+                link_id: link_id.clone(),
+                action_kind: result.action_kind,
+                from_state: previous_state,
+                to_state: current_state,
+                actor_id: request.actor.actor_id.clone(),
+                actor_role: request.actor.role.clone(),
+                transitioned_at_unix_ms: created_at_unix_ms,
+            })?;
+
+        let next_audit_event_id = self.next_audit_event_id()?;
+        self.audit_store.append(&AuditEvent {
+            event_id: next_audit_event_id,
+            actor_id: request.actor.actor_id,
+            actor_role: request.actor.role,
+            action_kind: result.action_kind,
+            link_id: result.link_id.clone(),
+            summary: result.summary.clone(),
+            created_at_unix_ms,
+        })?;
+
+        Ok(ActionExecutionResponse {
+            result,
+            audit_event_id: next_audit_event_id,
+            previous_state,
+            current_state,
+        })
+    }
+
+    pub fn query_audit(&self, query: AuditQuery) -> Result<Vec<AuditEvent>, ActionApiError> {
+        Ok(self.audit_store.query(query)?)
+    }
+
+    pub fn query_candidate_history(
+        &self,
+        link_id: &str,
+        limit: usize,
+    ) -> Result<Vec<CandidateStateTransition>, ActionApiError> {
+        Ok(self
+            .candidate_state_store
+            .query_transitions(link_id, limit)?)
+    }
+
+    pub fn query_candidate_state(
+        &self,
+        link_id: &str,
+    ) -> Result<CandidateLinkState, ActionApiError> {
+        Ok(self.candidate_state_store.get_state(link_id)?)
+    }
+
+    fn next_audit_event_id(&self) -> Result<i64, ActionApiError> {
+        let latest = self.audit_store.query(AuditQuery {
+            link_id: None,
+            limit: 1,
+        })?;
+        Ok(latest.first().map(|event| event.event_id + 1).unwrap_or(1))
+    }
+}
+
+fn command_link_id(command: &ActionCommand) -> Option<&str> {
+    match command {
+        ActionCommand::ConfirmLink(command) => Some(command.link_id.as_str()),
+        ActionCommand::RejectLink(command) => Some(command.link_id.as_str()),
+        ActionCommand::AddEvidenceToLink(command) => Some(command.link_id.as_str()),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -391,15 +971,36 @@ fn parse_action_kind(value: &str) -> Result<ActionKind, String> {
     }
 }
 
+fn format_candidate_state(state: CandidateLinkState) -> &'static str {
+    match state {
+        CandidateLinkState::Candidate => "candidate",
+        CandidateLinkState::InReview => "in_review",
+        CandidateLinkState::Confirmed => "confirmed",
+        CandidateLinkState::Rejected => "rejected",
+    }
+}
+
+fn parse_candidate_state(value: &str) -> Result<CandidateLinkState, String> {
+    match value {
+        "candidate" => Ok(CandidateLinkState::Candidate),
+        "in_review" => Ok(CandidateLinkState::InReview),
+        "confirmed" => Ok(CandidateLinkState::Confirmed),
+        "rejected" => Ok(CandidateLinkState::Rejected),
+        unknown => Err(format!("unknown candidate_state: {}", unknown)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        ActionActor, ActionCommand, ActionHandler, ActionKind, ActionRequest,
-        AddEvidenceToLinkCommand, AuditEvent, AuditLogStore, AuditQuery, BasicActionHandler,
-        ConfirmLinkCommand, KernelError, RejectLinkCommand, SqliteAuditLogStore,
+        ActionActor, ActionAuditApiService, ActionCommand, ActionHandler, ActionKind,
+        ActionRequest, AddEvidenceToLinkCommand, AuditEvent, AuditLogStore, AuditQuery,
+        BasicActionHandler, CandidateLifecycleError, CandidateLifecycleMachine, CandidateLinkState,
+        CandidateStateStore, ConfirmLinkCommand, InMemoryCandidateStateStore, KernelError,
+        RejectLinkCommand, SqliteAuditLogStore, SqliteCandidateStateStore,
     };
 
     fn actor_with_role(role: &str) -> ActionActor {
@@ -610,6 +1211,115 @@ mod tests {
             }),
         });
         assert!(add.is_ok());
+    }
+
+    #[test]
+    fn lifecycle_machine_transitions_candidate_to_confirmed() {
+        let machine = CandidateLifecycleMachine;
+        let next = machine
+            .next_state(CandidateLinkState::Candidate, ActionKind::ConfirmLink)
+            .expect("candidate should transition to confirmed on confirm action");
+        assert_eq!(next, CandidateLinkState::Confirmed);
+    }
+
+    #[test]
+    fn lifecycle_machine_rejects_add_evidence_after_confirmation() {
+        let machine = CandidateLifecycleMachine;
+        let error = machine
+            .next_state(CandidateLinkState::Confirmed, ActionKind::AddEvidenceToLink)
+            .expect_err("confirmed candidate should reject add-evidence transition");
+
+        assert_eq!(
+            error,
+            CandidateLifecycleError::InvalidTransition {
+                action: ActionKind::AddEvidenceToLink,
+                from: CandidateLinkState::Confirmed,
+            }
+        );
+    }
+
+    #[test]
+    fn action_api_service_executes_action_and_records_state_and_audit() {
+        let handler = BasicActionHandler::default();
+        let audit_db_path = temp_audit_db_path("action_api");
+        let audit_store = SqliteAuditLogStore::new(&audit_db_path).expect("audit store init");
+        let candidate_store = InMemoryCandidateStateStore::default();
+        let service = ActionAuditApiService::new(handler, audit_store.clone(), candidate_store);
+
+        let response = service
+            .execute(
+                ActionRequest {
+                    actor: actor_with_role("reviewer"),
+                    command: ActionCommand::ConfirmLink(ConfirmLinkCommand {
+                        link_id: "link-api-1".to_string(),
+                        justification: "validated by expert".to_string(),
+                    }),
+                },
+                1_706_000_111_000,
+            )
+            .expect("action execution should succeed");
+
+        assert_eq!(response.previous_state, CandidateLinkState::Candidate);
+        assert_eq!(response.current_state, CandidateLinkState::Confirmed);
+        assert_eq!(response.result.action_kind, ActionKind::ConfirmLink);
+        assert_eq!(response.audit_event_id, 1);
+
+        let audit_events = service
+            .query_audit(AuditQuery {
+                link_id: Some("link-api-1".to_string()),
+                limit: 5,
+            })
+            .expect("audit query should succeed");
+        assert_eq!(audit_events.len(), 1);
+        assert_eq!(audit_events[0].event_id, 1);
+
+        let history = service
+            .query_candidate_history("link-api-1", 5)
+            .expect("candidate history query should succeed");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].from_state, CandidateLinkState::Candidate);
+        assert_eq!(history[0].to_state, CandidateLinkState::Confirmed);
+
+        let state = service
+            .query_candidate_state("link-api-1")
+            .expect("candidate state query should succeed");
+        assert_eq!(state, CandidateLinkState::Confirmed);
+    }
+
+    #[test]
+    fn sqlite_candidate_state_store_persists_state_and_history() {
+        let db_path = temp_audit_db_path("candidate_store");
+        let store = SqliteCandidateStateStore::new(&db_path).expect("candidate store init");
+
+        store
+            .set_state(
+                "link-store-1",
+                CandidateLinkState::InReview,
+                1_706_000_222_000,
+            )
+            .expect("set state should succeed");
+        store
+            .append_transition(&super::CandidateStateTransition {
+                link_id: "link-store-1".to_string(),
+                action_kind: ActionKind::AddEvidenceToLink,
+                from_state: CandidateLinkState::Candidate,
+                to_state: CandidateLinkState::InReview,
+                actor_id: "operator-1".to_string(),
+                actor_role: "operator".to_string(),
+                transitioned_at_unix_ms: 1_706_000_222_000,
+            })
+            .expect("append transition should succeed");
+
+        let state = store
+            .get_state("link-store-1")
+            .expect("get state should succeed");
+        assert_eq!(state, CandidateLinkState::InReview);
+
+        let history = store
+            .query_transitions("link-store-1", 10)
+            .expect("query transitions should succeed");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].to_state, CandidateLinkState::InReview);
     }
 
     #[test]

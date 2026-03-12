@@ -161,6 +161,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let report =
                 run_product_flow(&outcome.records, paths, append, &mut next_audit_event_id)?;
             product_metrics.ontology_objects_total += report.ontology_objects;
+            product_metrics.ontology_relations_total += report.ontology_relations;
             product_metrics.deterministic_links_total += report.deterministic_links;
             product_metrics.candidate_links_total += report.candidate_links;
             product_metrics.actions_total += report.actions;
@@ -171,6 +172,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 serde_json::json!({
                     "run_index": run_idx + 1,
                     "ontology_objects": report.ontology_objects,
+                    "ontology_relations": report.ontology_relations,
                     "deterministic_links": report.deterministic_links,
                     "candidate_links": report.candidate_links,
                     "actions": report.actions,
@@ -230,6 +232,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "product_flow_metrics",
             serde_json::json!({
                 "ontology_objects_total": product_metrics.ontology_objects_total,
+                "ontology_relations_total": product_metrics.ontology_relations_total,
                 "deterministic_links_total": product_metrics.deterministic_links_total,
                 "candidate_links_total": product_metrics.candidate_links_total,
                 "actions_total": product_metrics.actions_total,
@@ -252,6 +255,7 @@ struct PipelineMetrics {
 #[derive(Debug, Default, Clone, Copy)]
 struct ProductFlowMetrics {
     ontology_objects_total: usize,
+    ontology_relations_total: usize,
     deterministic_links_total: usize,
     candidate_links_total: usize,
     actions_total: usize,
@@ -278,6 +282,7 @@ fn now_unix_ms() -> i64 {
 #[derive(Debug, Clone)]
 struct ProductOutputPaths {
     ontology_output: PathBuf,
+    ontology_relations_output: PathBuf,
     deterministic_links_output: PathBuf,
     candidate_links_output: PathBuf,
     actions_output: PathBuf,
@@ -296,6 +301,7 @@ impl ProductOutputPaths {
 
         Ok(Self {
             ontology_output: output_dir.join("ontology.objects.jsonl"),
+            ontology_relations_output: output_dir.join("ontology.relations.jsonl"),
             deterministic_links_output: output_dir.join("links.r1.jsonl"),
             candidate_links_output: output_dir.join("links.r2.jsonl"),
             actions_output: output_dir.join("actions.results.jsonl"),
@@ -320,6 +326,7 @@ fn default_product_output_dir(output_path: &PathBuf) -> PathBuf {
 #[derive(Debug, Clone, Copy, Default)]
 struct ProductFlowReport {
     ontology_objects: usize,
+    ontology_relations: usize,
     deterministic_links: usize,
     candidate_links: usize,
     actions: usize,
@@ -345,11 +352,18 @@ fn run_product_flow(
 ) -> Result<ProductFlowReport, Box<dyn Error>> {
     let materializer = BasicOntologyMaterializer;
     let mut ontology_objects = Vec::new();
+    let mut ontology_relations = Vec::new();
     for record in records {
         ontology_objects.extend(materializer.materialize(record));
+        ontology_relations.extend(materializer.materialize_relations(record));
     }
 
     write_jsonl(&output_paths.ontology_output, &ontology_objects, append)?;
+    write_jsonl(
+        &output_paths.ontology_relations_output,
+        &ontology_relations,
+        append,
+    )?;
 
     let seeds = build_link_seeds(&ontology_objects);
     let strong_key_generator = StrongKeyDeterministicGenerator::new("related_to");
@@ -441,6 +455,7 @@ fn run_product_flow(
 
     Ok(ProductFlowReport {
         ontology_objects: ontology_objects.len(),
+        ontology_relations: ontology_relations.len(),
         deterministic_links: deterministic_links.len(),
         candidate_links: candidate_links.len(),
         actions: action_logs.len(),
@@ -1393,6 +1408,7 @@ mod tests {
 
         let output_paths = ProductOutputPaths {
             ontology_output: temp_dir.join("ontology.objects.jsonl"),
+            ontology_relations_output: temp_dir.join("ontology.relations.jsonl"),
             deterministic_links_output: temp_dir.join("links.r1.jsonl"),
             candidate_links_output: temp_dir.join("links.r2.jsonl"),
             actions_output: temp_dir.join("actions.results.jsonl"),
@@ -1439,9 +1455,11 @@ mod tests {
             .expect("product flow should run successfully");
 
         assert!(report.ontology_objects >= 3);
+        assert!(report.ontology_relations >= 1);
         assert!(report.deterministic_links >= 1);
         assert!(report.actions >= 1);
         assert!(output_paths.ontology_output.exists());
+        assert!(output_paths.ontology_relations_output.exists());
         assert!(output_paths.deterministic_links_output.exists());
         assert!(output_paths.actions_output.exists());
         assert!(output_paths.audit_db_path.exists());

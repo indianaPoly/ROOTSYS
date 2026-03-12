@@ -8,7 +8,16 @@ use sha2::{Digest, Sha256};
 pub enum OntologyObjectType {
     Defect,
     Cause,
+    CompositeCause,
     Evidence,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OntologyRelationType {
+    HasCause,
+    SupportedBy,
+    CombinesTo,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,9 +47,22 @@ pub struct OntologyObject {
     pub attributes: Value,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OntologyRelation {
+    pub relation_id: String,
+    pub identity_strategy: OntologyIdentityStrategy,
+    pub relation_type: OntologyRelationType,
+    pub left_object_id: String,
+    pub right_object_id: String,
+    pub lineage: OntologyLineage,
+    pub attributes: Value,
+}
+
 pub trait OntologyMaterializer {
     fn materialize(&self, record: &IntegrationRecord) -> Vec<OntologyObject>;
     fn materialize_jsonl_lines(&self, record: &IntegrationRecord) -> Vec<String>;
+    fn materialize_relations(&self, record: &IntegrationRecord) -> Vec<OntologyRelation>;
+    fn materialize_relation_jsonl_lines(&self, record: &IntegrationRecord) -> Vec<String>;
 }
 
 #[derive(Debug, Clone, Default)]
@@ -51,6 +73,7 @@ impl BasicOntologyMaterializer {
         let object_type_token = match object_type {
             OntologyObjectType::Defect => "defect",
             OntologyObjectType::Cause => "cause",
+            OntologyObjectType::CompositeCause => "composite_cause",
             OntologyObjectType::Evidence => "evidence",
         };
 
@@ -108,6 +131,9 @@ impl BasicOntologyMaterializer {
             if has_any_key(payload, CAUSE_KEYS) {
                 object_types.push(OntologyObjectType::Cause);
             }
+            if has_any_key(payload, COMPOSITE_CAUSE_KEYS) {
+                object_types.push(OntologyObjectType::CompositeCause);
+            }
             if has_any_key(payload, EVIDENCE_KEYS) {
                 object_types.push(OntologyObjectType::Evidence);
             }
@@ -138,6 +164,7 @@ impl BasicOntologyMaterializer {
             let selected_keys = match object_type {
                 OntologyObjectType::Defect => DEFECT_KEYS,
                 OntologyObjectType::Cause => CAUSE_KEYS,
+                OntologyObjectType::CompositeCause => COMPOSITE_CAUSE_KEYS,
                 OntologyObjectType::Evidence => EVIDENCE_KEYS,
             };
 
@@ -149,6 +176,69 @@ impl BasicOntologyMaterializer {
         }
 
         Value::Object(attributes)
+    }
+
+    fn relation_id(
+        record: &IntegrationRecord,
+        relation_type: OntologyRelationType,
+        left_object_id: &str,
+        right_object_id: &str,
+    ) -> String {
+        let relation_type_token = match relation_type {
+            OntologyRelationType::HasCause => "has_cause",
+            OntologyRelationType::SupportedBy => "supported_by",
+            OntologyRelationType::CombinesTo => "combines_to",
+        };
+
+        let mut hasher = Sha256::new();
+        hasher.update(record.source.as_bytes());
+        hasher.update([0]);
+        hasher.update(record.interface.name.as_bytes());
+        hasher.update([0]);
+        hasher.update(record.interface.version.as_bytes());
+        hasher.update([0]);
+        hasher.update(record.record_id.as_bytes());
+        hasher.update([0]);
+        hasher.update(relation_type_token.as_bytes());
+        hasher.update([0]);
+        hasher.update(left_object_id.as_bytes());
+        hasher.update([0]);
+        hasher.update(right_object_id.as_bytes());
+
+        format!("{:x}", hasher.finalize())
+    }
+
+    fn relation(
+        record: &IntegrationRecord,
+        relation_type: OntologyRelationType,
+        left_object_id: &str,
+        right_object_id: &str,
+    ) -> OntologyRelation {
+        let mut attributes = Map::new();
+        attributes.insert(
+            "source_record_id".to_string(),
+            Value::String(record.record_id.clone()),
+        );
+
+        OntologyRelation {
+            relation_id: Self::relation_id(record, relation_type, left_object_id, right_object_id),
+            identity_strategy: OntologyIdentityStrategy::DeterministicV1,
+            relation_type,
+            left_object_id: left_object_id.to_string(),
+            right_object_id: right_object_id.to_string(),
+            lineage: Self::lineage(record),
+            attributes: Value::Object(attributes),
+        }
+    }
+
+    fn first_object_id(
+        objects: &[OntologyObject],
+        object_type: OntologyObjectType,
+    ) -> Option<&str> {
+        objects
+            .iter()
+            .find(|object| object.object_type == object_type)
+            .map(|object| object.object_id.as_str())
     }
 }
 
@@ -166,10 +256,81 @@ impl OntologyMaterializer for BasicOntologyMaterializer {
             .filter_map(|object| serde_json::to_string(&object).ok())
             .collect()
     }
+
+    fn materialize_relations(&self, record: &IntegrationRecord) -> Vec<OntologyRelation> {
+        let objects = self.materialize(record);
+        let defect_id = Self::first_object_id(&objects, OntologyObjectType::Defect);
+        let cause_id = Self::first_object_id(&objects, OntologyObjectType::Cause);
+        let composite_cause_id =
+            Self::first_object_id(&objects, OntologyObjectType::CompositeCause);
+        let evidence_id = Self::first_object_id(&objects, OntologyObjectType::Evidence);
+
+        let mut relations = Vec::new();
+
+        if let (Some(defect_id), Some(cause_id)) = (defect_id, cause_id) {
+            relations.push(Self::relation(
+                record,
+                OntologyRelationType::HasCause,
+                defect_id,
+                cause_id,
+            ));
+        }
+
+        if let (Some(defect_id), Some(composite_cause_id)) = (defect_id, composite_cause_id) {
+            relations.push(Self::relation(
+                record,
+                OntologyRelationType::HasCause,
+                defect_id,
+                composite_cause_id,
+            ));
+        }
+
+        if let (Some(cause_id), Some(evidence_id)) = (cause_id, evidence_id) {
+            relations.push(Self::relation(
+                record,
+                OntologyRelationType::SupportedBy,
+                cause_id,
+                evidence_id,
+            ));
+        }
+
+        if let (Some(composite_cause_id), Some(evidence_id)) = (composite_cause_id, evidence_id) {
+            relations.push(Self::relation(
+                record,
+                OntologyRelationType::SupportedBy,
+                composite_cause_id,
+                evidence_id,
+            ));
+        }
+
+        if let (Some(cause_id), Some(composite_cause_id)) = (cause_id, composite_cause_id) {
+            relations.push(Self::relation(
+                record,
+                OntologyRelationType::CombinesTo,
+                cause_id,
+                composite_cause_id,
+            ));
+        }
+
+        relations
+    }
+
+    fn materialize_relation_jsonl_lines(&self, record: &IntegrationRecord) -> Vec<String> {
+        self.materialize_relations(record)
+            .into_iter()
+            .filter_map(|relation| serde_json::to_string(&relation).ok())
+            .collect()
+    }
 }
 
 const DEFECT_KEYS: &[&str] = &["defect_id", "defect_code", "lot_id", "line", "equipment_id"];
 const CAUSE_KEYS: &[&str] = &["cause_id", "cause_code", "cause", "category", "confidence"];
+const COMPOSITE_CAUSE_KEYS: &[&str] = &[
+    "composite_cause_id",
+    "composite_cause_code",
+    "composite_cause",
+    "component_cause_ids",
+];
 const EVIDENCE_KEYS: &[&str] = &[
     "evidence_id",
     "evidence_type",
@@ -205,7 +366,7 @@ mod tests {
 
     use super::{
         BasicOntologyMaterializer, OntologyIdentityStrategy, OntologyMaterializer,
-        OntologyObjectType,
+        OntologyObjectType, OntologyRelationType,
     };
 
     fn sample_record() -> IntegrationRecord {
@@ -295,6 +456,7 @@ mod tests {
 
         let mut defect_count = 0usize;
         let mut cause_count = 0usize;
+        let mut composite_cause_count = 0usize;
         let mut evidence_count = 0usize;
 
         for record in &records {
@@ -302,6 +464,7 @@ mod tests {
                 match object.object_type {
                     OntologyObjectType::Defect => defect_count += 1,
                     OntologyObjectType::Cause => cause_count += 1,
+                    OntologyObjectType::CompositeCause => composite_cause_count += 1,
                     OntologyObjectType::Evidence => evidence_count += 1,
                 }
             }
@@ -309,6 +472,7 @@ mod tests {
 
         assert_eq!(defect_count, 3);
         assert_eq!(cause_count, 1);
+        assert_eq!(composite_cause_count, 0);
         assert_eq!(evidence_count, 1);
     }
 
@@ -328,6 +492,95 @@ mod tests {
             assert!(parsed.get("lineage").is_some());
             assert!(parsed.get("attributes").is_some());
         }
+    }
+
+    #[test]
+    fn materialize_includes_composite_cause_when_payload_has_keys() {
+        let materializer = BasicOntologyMaterializer;
+        let record = IntegrationRecord {
+            source: "mes".to_string(),
+            interface: InterfaceRef {
+                name: "mes".to_string(),
+                version: "v1".to_string(),
+            },
+            record_id: "defect-010".to_string(),
+            ingested_at_unix_ms: 1_706_000_000_100,
+            payload: Payload::from_json(serde_json::json!({
+                "defect_id": "D-10",
+                "cause_id": "C-1",
+                "composite_cause_id": "CC-1"
+            })),
+            metadata: RecordMetadata::default(),
+            warnings: Vec::new(),
+        };
+
+        let objects = materializer.materialize(&record);
+        assert!(objects
+            .iter()
+            .any(|object| object.object_type == OntologyObjectType::CompositeCause));
+    }
+
+    #[test]
+    fn materialize_relations_emits_canonical_relation_types() {
+        let materializer = BasicOntologyMaterializer;
+        let record = IntegrationRecord {
+            source: "mes".to_string(),
+            interface: InterfaceRef {
+                name: "mes".to_string(),
+                version: "v1".to_string(),
+            },
+            record_id: "defect-011".to_string(),
+            ingested_at_unix_ms: 1_706_000_000_101,
+            payload: Payload::from_json(serde_json::json!({
+                "defect_id": "D-11",
+                "cause_id": "C-11",
+                "composite_cause_id": "CC-11",
+                "evidence_id": "E-11"
+            })),
+            metadata: RecordMetadata::default(),
+            warnings: Vec::new(),
+        };
+
+        let relations = materializer.materialize_relations(&record);
+        assert!(relations
+            .iter()
+            .any(|relation| relation.relation_type == OntologyRelationType::HasCause));
+        assert!(relations
+            .iter()
+            .any(|relation| relation.relation_type == OntologyRelationType::SupportedBy));
+        assert!(relations
+            .iter()
+            .any(|relation| relation.relation_type == OntologyRelationType::CombinesTo));
+    }
+
+    #[test]
+    fn materialize_relation_jsonl_lines_are_valid_json() {
+        let materializer = BasicOntologyMaterializer;
+        let record = IntegrationRecord {
+            source: "mes".to_string(),
+            interface: InterfaceRef {
+                name: "mes".to_string(),
+                version: "v1".to_string(),
+            },
+            record_id: "defect-012".to_string(),
+            ingested_at_unix_ms: 1_706_000_000_102,
+            payload: Payload::from_json(serde_json::json!({
+                "defect_id": "D-12",
+                "cause_id": "C-12"
+            })),
+            metadata: RecordMetadata::default(),
+            warnings: Vec::new(),
+        };
+
+        let lines = materializer.materialize_relation_jsonl_lines(&record);
+        assert_eq!(lines.len(), 1);
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&lines[0]).expect("relation JSONL line should parse");
+        assert!(parsed.get("relation_id").is_some());
+        assert!(parsed.get("relation_type").is_some());
+        assert!(parsed.get("left_object_id").is_some());
+        assert!(parsed.get("right_object_id").is_some());
     }
 
     fn load_fixture_records(file_name: &str) -> Vec<IntegrationRecord> {

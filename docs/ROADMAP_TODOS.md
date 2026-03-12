@@ -4,7 +4,11 @@ This file is the human-controlled roadmap checklist.
 Use it as the source of truth for priorities, and mirror each item into GitHub Issues.
 
 ## Conventions
-- IDs: `A*` = Integration track (this repo), `B*` = Product track (post-integration: ontology/actions/ui)
+- IDs:
+  - `A*` = Integration foundations track (this repo)
+  - `B*` = Product design/spec track (post-integration: ontology/actions/ui)
+  - `C*` = Product MVP implementation track (ontology/linkage/kernel/ops baseline)
+  - `D*` = Whitepaper completion and productionization track
 - Issue title format: `Roadmap(<ID>): <short action>`
 - Labels (recommended):
   - `track/integration` / `track/product`
@@ -22,6 +26,13 @@ Use it as the source of truth for priorities, and mirror each item into GitHub I
 - `P1-Ontology` (B6)
 - `P2-Actions` (B7)
 - `P3-UI` (B8)
+- `C0-Core-Bootstrap` (C0)
+- `C1-Ontology-Materialization` (C1)
+- `C2-Linking-Engine` (C2)
+- `C3-Action-Policy-Audit` (C3)
+- `C4-Local-Ops-Baseline` (C4)
+- `D0-Whitepaper-Core` (D0)
+- `D1-Whitepaper-Hardening` (D1)
 
 ---
 
@@ -110,3 +121,24 @@ Use it as the source of truth for priorities, and mirror each item into GitHub I
 - [x] Roadmap(C4-2): Add baseline observability (structured logs + key metrics counters)
 - [x] Roadmap(C4-3): Add security/config baseline (.env template + secret handling guidance)
 - [x] Roadmap(C4-4): Add replay/recovery runbook for common failure modes
+
+---
+
+## D0. Whitepaper Core Completion (Priority: P0 first, then P1)
+- [ ] Roadmap(D0-1): Expand ontology model to include CompositeCause and canonical Defect-Cause-Evidence relations (#60, `prio/p0`)
+- [ ] Roadmap(D0-2): Implement R3 human-in-the-loop candidate lifecycle and decision state machine (#61, `prio/p0`)
+- [ ] Roadmap(D0-3): Expose action and audit query APIs for review workflows (#62, `prio/p0`)
+- [ ] Roadmap(D0-4): Implement single-screen CAPA analysis UI route and 4-pane layout (#63, `prio/p0`)
+- [ ] Roadmap(D0-5): Integrate CAPA UI actions with policy-aware backend workflows (#64, `prio/p1`)
+
+## D1. Whitepaper Hardening (Streaming/Security/Ops)
+- [ ] Roadmap(D1-1): Replace stream.kafka fixture mode with real Kafka consume and checkpoint commit (#65, `prio/p1`)
+- [ ] Roadmap(D1-2): Harden action security model with authenticated actor context and scoped authorization (#66, `prio/p1`)
+- [ ] Roadmap(D1-3): Add full whitepaper vertical-slice E2E tests across integration to UI decision flow (#67, `prio/p1`)
+- [ ] Roadmap(D1-4): Extend operational dashboards for candidate throughput and analysis lead-time KPIs (#68, `prio/p2`)
+- [ ] Roadmap(D1-5): Publish whitepaper-readiness runbook and release gate checklist (#69, `prio/p2`)
+
+## Active Priority Order (Execution Queue)
+1. `P0`: #60 -> #61 -> #62 -> #63
+2. `P1`: #64 -> #65 -> #66 -> #67
+3. `P2`: #68 -> #69
