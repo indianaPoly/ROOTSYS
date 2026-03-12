@@ -233,21 +233,33 @@ export function AnalysisWorkspace({ data }: Props) {
     const requestBody: {
       actorId: string;
       actorRole: string;
+      scope: {
+        linkIds: string[];
+      };
       actionType: ActionType;
       payload: Record<string, unknown>;
     } = {
       actorId: `ui-${actorRole}-1`,
       actorRole,
+      scope: {
+        linkIds: [selectedCause.id]
+      },
       actionType: actionMode,
       payload
     };
 
+    const authToken = process.env.NEXT_PUBLIC_ROOTSYS_ACTION_API_TOKEN;
+    const headers: Record<string, string> = {
+      "content-type": "application/json"
+    };
+    if (authToken) {
+      headers["x-rootsys-auth-token"] = authToken;
+    }
+
     try {
       const response = await fetch("/api/actions", {
         method: "POST",
-        headers: {
-          "content-type": "application/json"
-        },
+        headers,
         body: JSON.stringify(requestBody)
       });
       const responseBody = (await response.json()) as

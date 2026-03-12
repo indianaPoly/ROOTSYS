@@ -25,6 +25,9 @@ type AddEvidencePayload = {
 type ActionRequest = {
   actorId: string;
   actorRole: string;
+  scope: {
+    linkIds: string[];
+  };
   actionType: ActionType;
   payload: ConfirmPayload | RejectPayload | AddEvidencePayload;
 };
@@ -57,7 +60,10 @@ const historyPath = path.join(storeDir, "candidate-history.jsonl");
 const auditPath = path.join(storeDir, "audit-events.jsonl");
 
 type ApiErrorCode =
+  | "AUTH_CONTEXT_REQUIRED"
+  | "AUTH_TOKEN_INVALID"
   | "POLICY_PERMISSION_DENIED"
+  | "POLICY_SCOPE_DENIED"
   | "ACTION_INVALID_LINK_STATE"
   | "ACTION_VALIDATION_FAILED"
   | "ACTION_UNKNOWN"
@@ -83,55 +89,76 @@ export async function executeAction(request: ActionRequest): Promise<{
   auditEventId: number;
   policyDecision: "allow";
 }> {
-  validatePermission(request.actorRole, request.actionType);
-  validatePayload(request.actionType, request.payload);
-
-  const linkId = getLinkId(request.payload);
-  const currentStates = await readCandidateStates();
-  const previousState = currentStates[linkId] ?? "candidate";
-  const currentState = nextState(previousState, request.actionType);
   const now = Date.now();
+  const linkId = getLinkId(request.payload);
 
   const auditEvents = await readJsonl<AuditEvent>(auditPath);
   const auditEventId = (auditEvents[0]?.eventId ?? 0) + 1;
   const actionId = `act-${auditEventId}`;
 
-  currentStates[linkId] = currentState;
-  await writeJson(statePath, currentStates);
+  try {
+    validateActorContext(request.actorId, request.actorRole);
+    validatePermission(request.actorRole, request.actionType);
+    validateScope(request.scope, linkId);
+    validatePayload(request.actionType, request.payload);
 
-  const transition: CandidateTransition = {
-    linkId,
-    actionType: request.actionType,
-    fromState: previousState,
-    toState: currentState,
-    actorId: request.actorId,
-    actorRole: request.actorRole,
-    transitionedAtUnixMs: now
-  };
-  await appendJsonl(historyPath, transition);
+    const currentStates = await readCandidateStates();
+    const previousState = currentStates[linkId] ?? "candidate";
+    const currentState = nextState(previousState, request.actionType);
 
-  const auditEvent: AuditEvent = {
-    eventId: auditEventId,
-    actionId,
-    actorId: request.actorId,
-    actorRole: request.actorRole,
-    actionType: request.actionType,
-    linkId,
-    summary: summarizeAction(request.actionType, request.payload),
-    policyDecision: "allow",
-    createdAtUnixMs: now
-  };
-  await appendJsonl(auditPath, auditEvent);
+    currentStates[linkId] = currentState;
+    await writeJson(statePath, currentStates);
 
-  return {
-    actionId,
-    actionType: request.actionType,
-    linkId,
-    previousState,
-    currentState,
-    auditEventId,
-    policyDecision: "allow"
-  };
+    const transition: CandidateTransition = {
+      linkId,
+      actionType: request.actionType,
+      fromState: previousState,
+      toState: currentState,
+      actorId: request.actorId,
+      actorRole: request.actorRole,
+      transitionedAtUnixMs: now
+    };
+    await appendJsonl(historyPath, transition);
+
+    const auditEvent: AuditEvent = {
+      eventId: auditEventId,
+      actionId,
+      actorId: request.actorId,
+      actorRole: request.actorRole,
+      actionType: request.actionType,
+      linkId,
+      summary: summarizeAction(request.actionType, request.payload),
+      policyDecision: "allow",
+      createdAtUnixMs: now
+    };
+    await appendJsonl(auditPath, auditEvent);
+
+    return {
+      actionId,
+      actionType: request.actionType,
+      linkId,
+      previousState,
+      currentState,
+      auditEventId,
+      policyDecision: "allow"
+    };
+  } catch (error) {
+    if (error instanceof ApiError) {
+      const deniedAudit: AuditEvent = {
+        eventId: auditEventId,
+        actionId,
+        actorId: request.actorId,
+        actorRole: request.actorRole,
+        actionType: request.actionType,
+        linkId,
+        summary: `${error.code}: ${error.message}`,
+        policyDecision: "deny",
+        createdAtUnixMs: now
+      };
+      await appendJsonl(auditPath, deniedAudit);
+    }
+    throw error;
+  }
 }
 
 export async function queryAudit(params: { linkId?: string; limit?: number }): Promise<AuditEvent[]> {
@@ -168,6 +195,30 @@ export async function queryCandidateHistory(params: {
   return rows.filter((row) => row.linkId === normalizedLinkId).slice(0, limit);
 }
 
+export async function appendDeniedAuditEvent(input: {
+  actorId: string;
+  actorRole: string;
+  actionType: ActionType;
+  linkId: string;
+  errorCode: ApiErrorCode;
+  message: string;
+}): Promise<number> {
+  const rows = await readJsonl<AuditEvent>(auditPath);
+  const eventId = (rows[0]?.eventId ?? 0) + 1;
+  await appendJsonl(auditPath, {
+    eventId,
+    actionId: `act-${eventId}`,
+    actorId: input.actorId,
+    actorRole: input.actorRole,
+    actionType: input.actionType,
+    linkId: input.linkId,
+    summary: `${input.errorCode}: ${input.message}`,
+    policyDecision: "deny",
+    createdAtUnixMs: Date.now()
+  } satisfies AuditEvent);
+  return eventId;
+}
+
 function validatePermission(actorRole: string, actionType: ActionType): void {
   const role = normalizeNonEmpty(actorRole, "actorRole");
   if (role === "admin") {
@@ -186,6 +237,24 @@ function validatePermission(actorRole: string, actionType: ActionType): void {
       `role '${role}' is not allowed to execute '${actionType}'`,
       403
     );
+  }
+}
+
+function validateActorContext(actorId: string, actorRole: string): void {
+  normalizeNonEmpty(actorId, "actorId");
+  const role = normalizeNonEmpty(actorRole, "actorRole");
+  if (role !== "reviewer" && role !== "operator" && role !== "admin") {
+    throw new ApiError("AUTH_CONTEXT_REQUIRED", `actorRole '${role}' is not a recognized role`, 401);
+  }
+}
+
+function validateScope(scope: ActionRequest["scope"], linkId: string): void {
+  const scoped = scope?.linkIds ?? [];
+  if (!Array.isArray(scoped) || scoped.length === 0) {
+    throw new ApiError("POLICY_SCOPE_DENIED", "No scoped linkIds were provided for this actor", 403);
+  }
+  if (!scoped.includes(linkId)) {
+    throw new ApiError("POLICY_SCOPE_DENIED", `link '${linkId}' is outside actor scope`, 403);
   }
 }
 
