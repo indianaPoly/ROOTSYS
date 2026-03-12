@@ -17,4 +17,5 @@ Entry point for docs/runbooks.
 - `docs/runbooks/complex_pipeline_checks.md`: deeper runtime checks for interval/product-flow/sqlite-replay/merge.
 - `docs/runbooks/code_and_script_annotations.md`: annotation-style reference for added code/scripts and execution flow.
 - `docs/runbooks/company_profile_configuration.md`: company-specific profile configuration before execution.
+- `docs/runbooks/whitepaper_readiness_release_gate_d1_5.md`: whitepaper readiness criteria, release gate checklist, and rollback guide.
 - `docs/ROADMAP_TODOS.md`: operations-related roadmap items.

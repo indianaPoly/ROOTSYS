@@ -135,8 +135,8 @@ Use it as the source of truth for priorities, and mirror each item into GitHub I
 - [x] Roadmap(D1-1): Replace stream.kafka fixture mode with real Kafka consume and checkpoint commit (#65, `prio/p1`)
 - [x] Roadmap(D1-2): Harden action security model with authenticated actor context and scoped authorization (#66, `prio/p1`)
 - [x] Roadmap(D1-3): Add full whitepaper vertical-slice E2E tests across integration to UI decision flow (#67, `prio/p1`)
-- [ ] Roadmap(D1-4): Extend operational dashboards for candidate throughput and analysis lead-time KPIs (#68, `prio/p2`)
-- [ ] Roadmap(D1-5): Publish whitepaper-readiness runbook and release gate checklist (#69, `prio/p2`)
+- [x] Roadmap(D1-4): Extend operational dashboards for candidate throughput and analysis lead-time KPIs (#68, `prio/p2`)
+- [x] Roadmap(D1-5): Publish whitepaper-readiness runbook and release gate checklist (#69, `prio/p2`)
 
 ## Active Priority Order (Execution Queue)
-1. `P2`: #68 -> #69
+1. Completed: D-track whitepaper roadmap items (#60-#69)
