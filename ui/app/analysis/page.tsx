@@ -13,6 +13,11 @@ export default async function AnalysisIndexPage() {
         <p className="eyebrow">ROOTSYS CAPA Analysis</p>
         <h1>Defect-Centric Review Workspace</h1>
         <p className="lede">Open one defect route to inspect causes, evidence, and action decisions on a single screen.</p>
+        <p className="paneHint">
+          <Link className="inlineLink" href="/analysis/ops">
+            Open operations KPI dashboard
+          </Link>
+        </p>
       </section>
 
       <section className="panel section" aria-label="Defect routes">

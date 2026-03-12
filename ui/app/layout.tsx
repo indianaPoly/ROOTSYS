@@ -40,6 +40,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             <nav className="navLinks" aria-label="Site">
               <Link href="/">Overview</Link>
               <Link href="/analysis">Analysis</Link>
+              <Link href="/analysis/ops">Ops Dashboard</Link>
               <Link href="/console">Runtime Console</Link>
             </nav>
           </div>

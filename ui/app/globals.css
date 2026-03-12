@@ -602,6 +602,42 @@ h1 {
   color: var(--muted);
 }
 
+.opsKpiGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.opsKpiCard {
+  border-radius: 16px;
+  border: 1px solid rgba(171, 186, 211, 0.35);
+  background: rgba(255, 255, 255, 0.8);
+  padding: 0.8rem;
+}
+
+.opsKpiCard h2 {
+  margin: 0;
+  color: #4d6288;
+  font-size: 0.85rem;
+}
+
+.opsKpiCard p {
+  margin: 0.35rem 0 0;
+  font-size: 1.4rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.opsAlertWarn {
+  border-color: rgba(215, 157, 69, 0.62);
+  background: rgba(255, 243, 224, 0.85);
+}
+
+.opsAlertCritical {
+  border-color: rgba(201, 74, 74, 0.65);
+  background: rgba(255, 231, 231, 0.88);
+}
+
 .hintRow {
   margin-top: 0.75rem;
   padding-top: 0.75rem;
@@ -754,6 +790,10 @@ th {
   .defectGrid {
     grid-template-columns: 1fr;
   }
+
+  .opsKpiGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 520px) {
@@ -770,6 +810,10 @@ th {
   }
 
   .analysisFilters {
+    grid-template-columns: 1fr;
+  }
+
+  .opsKpiGrid {
     grid-template-columns: 1fr;
   }
 }

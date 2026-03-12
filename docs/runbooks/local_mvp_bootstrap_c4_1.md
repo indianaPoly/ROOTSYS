@@ -43,3 +43,37 @@ ROOTSYS_MVP_OUT_DIR=/tmp/rootsys-mvp-demo bash scripts/run_local_mvp_bootstrap.s
   `system/contracts/reference/allowlist.json`.
 - If DB fixture reads fail, re-run `python3 scripts/create_sample_dbs.py`.
 - If output files are empty, inspect interface query and fixture DB contents.
+
+## D1-4 Operations KPI Dashboard Thresholds
+
+The operations dashboard route is available at `/analysis/ops` and reads action/audit artifacts
+from local paths under `/tmp`.
+
+Current warning thresholds:
+
+- Reject-rate warning: `35%`
+- Lead-time warning: `240 minutes`
+- Backlog warning: `25 candidates`
+
+Threshold source: `ui/lib/ops-kpis.ts`.
+
+## D1-4 Smoke Checks
+
+After bootstrap, validate dashboard behavior with sample artifacts:
+
+1. Run bootstrap and product flow artifacts:
+
+   ```bash
+   bash scripts/run_local_mvp_bootstrap.sh
+   ```
+
+2. Run UI checks:
+
+   ```bash
+   cd ui && npm run typecheck && npm run build
+   ```
+
+3. Open `/analysis/ops` and verify:
+   - KPI cards render for throughput/approval/reject/lead-time/backlog
+   - Trend table shows day-level counts
+   - Alert panel reflects threshold comparisons
