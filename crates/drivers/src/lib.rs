@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use common::{ExternalRecord, Payload, PayloadFormat, RecordMetadata, SourceDetails};
+use kafka::consumer::{Consumer as KafkaConsumer, FetchOffset, GroupOffsetStorage};
 use mysql::prelude::Queryable;
 use thiserror::Error;
 
@@ -52,6 +53,8 @@ pub enum DriverError {
     Mysql(#[from] mysql::Error),
     #[error("unsupported db kind: {0}")]
     UnsupportedDbKind(String),
+    #[error("kafka error: {0}")]
+    Kafka(#[from] kafka::Error),
     #[error("circuit breaker is open for {driver}")]
     CircuitBreakerOpen { driver: String },
 }
@@ -355,16 +358,24 @@ pub enum StreamStartOffset {
     Latest,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamKafkaMode {
+    MvpFile,
+    Live,
+}
+
 #[derive(Debug, Clone)]
 pub struct KafkaStreamConfig {
     pub brokers: Vec<String>,
     pub topic: String,
     pub group_id: String,
+    pub mode: StreamKafkaMode,
     pub format: PayloadFormat,
     pub max_batch_records: Option<u32>,
     pub poll_timeout_ms: Option<u64>,
     pub start_offset: Option<StreamStartOffset>,
-    pub mvp_input: InputSource,
+    pub checkpoint_file: Option<PathBuf>,
+    pub mvp_input: Option<InputSource>,
 }
 
 #[derive(Debug, Clone)]
@@ -387,6 +398,12 @@ impl StreamDriver {
         &self,
         kafka: &KafkaStreamConfig,
     ) -> Result<Vec<ExternalRecord>, DriverError> {
+        let mvp_input = kafka.mvp_input.as_ref().ok_or_else(|| {
+            DriverError::InvalidResponse(
+                "stream.kafka.mvp_input is required when mode is mvp_file".to_string(),
+            )
+        })?;
+
         let max_records = kafka
             .max_batch_records
             .unwrap_or(DEFAULT_STREAM_MAX_BATCH_RECORDS)
@@ -396,12 +413,9 @@ impl StreamDriver {
 
         match kafka.format {
             PayloadFormat::Json => {
-                let reader = kafka.mvp_input.open_bufread()?;
-                let base = metadata_from_source(
-                    self.metadata.clone(),
-                    &kafka.mvp_input,
-                    "application/x-ndjson",
-                );
+                let reader = mvp_input.open_bufread()?;
+                let base =
+                    metadata_from_source(self.metadata.clone(), mvp_input, "application/x-ndjson");
                 let metadata = metadata_with_source_details(base, "stream/kafka", Some(locator));
                 let mut records = Vec::new();
 
@@ -428,9 +442,8 @@ impl StreamDriver {
                 Ok(records)
             }
             PayloadFormat::Text => {
-                let reader = kafka.mvp_input.open_bufread()?;
-                let base =
-                    metadata_from_source(self.metadata.clone(), &kafka.mvp_input, "text/plain");
+                let reader = mvp_input.open_bufread()?;
+                let base = metadata_from_source(self.metadata.clone(), mvp_input, "text/plain");
                 let metadata = metadata_with_source_details(base, "stream/kafka", Some(locator));
                 let mut records = Vec::new();
 
@@ -453,17 +466,120 @@ impl StreamDriver {
             PayloadFormat::Binary => {
                 let base = metadata_from_source(
                     self.metadata.clone(),
-                    &kafka.mvp_input,
+                    mvp_input,
                     "application/octet-stream",
                 );
                 let metadata = metadata_with_source_details(base, "stream/kafka", Some(locator));
-                let payload = Payload::from_bytes(kafka.mvp_input.read_all()?);
+                let payload = Payload::from_bytes(mvp_input.read_all()?);
                 Ok(vec![ExternalRecord { payload, metadata }])
             }
             PayloadFormat::Unknown => Err(DriverError::InvalidResponse(
                 "stream.kafka.format must be explicit (json/text/binary)".to_string(),
             )),
         }
+    }
+
+    fn fetch_kafka_live(
+        &self,
+        kafka: &KafkaStreamConfig,
+    ) -> Result<Vec<ExternalRecord>, DriverError> {
+        let max_records = kafka
+            .max_batch_records
+            .unwrap_or(DEFAULT_STREAM_MAX_BATCH_RECORDS)
+            .max(1) as usize;
+        let _poll_timeout_ms = kafka.poll_timeout_ms.unwrap_or(1_000).max(1);
+
+        let mut consumer = KafkaConsumer::from_hosts(kafka.brokers.clone())
+            .with_topic(kafka.topic.clone())
+            .with_group(kafka.group_id.clone())
+            .with_fallback_offset(
+                match kafka.start_offset.unwrap_or(StreamStartOffset::Latest) {
+                    StreamStartOffset::Earliest => FetchOffset::Earliest,
+                    StreamStartOffset::Latest => FetchOffset::Latest,
+                },
+            )
+            .with_offset_storage(Some(GroupOffsetStorage::Kafka))
+            .create()?;
+
+        let mut committed_offsets = HashMap::<i32, i64>::new();
+        if let Some(checkpoint_path) = &kafka.checkpoint_file {
+            committed_offsets = read_checkpoint_offsets(checkpoint_path)?;
+        }
+
+        let base = metadata_with_source_details(
+            metadata_with_content_type(
+                self.metadata.clone(),
+                None,
+                default_content_type(kafka.format),
+                None,
+            ),
+            "stream/kafka",
+            Some(format!(
+                "kafka://{}?group_id={}",
+                kafka.topic, kafka.group_id
+            )),
+        );
+
+        let mut records = Vec::new();
+        let mut latest_offsets = HashMap::<i32, i64>::new();
+
+        while records.len() < max_records {
+            let message_sets = consumer.poll()?;
+            if message_sets.is_empty() {
+                break;
+            }
+
+            for message_set in message_sets.iter() {
+                let partition = message_set.partition();
+                let checkpoint_offset = committed_offsets.get(&partition).copied();
+
+                for message in message_set.messages() {
+                    if let Some(checkpoint_offset) = checkpoint_offset {
+                        if message.offset <= checkpoint_offset {
+                            continue;
+                        }
+                    }
+
+                    let payload = decode_kafka_payload(message.value, kafka.format)?;
+                    let metadata = metadata_with_source_details(
+                        base.clone(),
+                        "stream/kafka",
+                        Some(format!(
+                            "kafka://{}?group_id={}&partition={}&offset={}",
+                            kafka.topic, kafka.group_id, partition, message.offset
+                        )),
+                    );
+
+                    latest_offsets.insert(partition, message.offset);
+                    records.push(ExternalRecord { payload, metadata });
+
+                    if records.len() >= max_records {
+                        break;
+                    }
+                }
+
+                consumer.consume_messageset(message_set)?;
+                if records.len() >= max_records {
+                    break;
+                }
+            }
+
+            consumer.commit_consumed()?;
+        }
+
+        if let Some(checkpoint_path) = &kafka.checkpoint_file {
+            for (partition, offset) in latest_offsets {
+                committed_offsets.insert(partition, offset);
+            }
+            write_checkpoint_offsets(
+                checkpoint_path,
+                &kafka.topic,
+                &kafka.group_id,
+                &committed_offsets,
+            )?;
+        }
+
+        Ok(records)
     }
 }
 
@@ -474,10 +590,106 @@ impl ExternalSystem for StreamDriver {
                 let kafka = self.config.kafka.as_ref().ok_or_else(|| {
                     DriverError::InvalidResponse("stream.kafka config is required".to_string())
                 })?;
-                self.fetch_kafka_mvp(kafka)
+                match kafka.mode {
+                    StreamKafkaMode::MvpFile => self.fetch_kafka_mvp(kafka),
+                    StreamKafkaMode::Live => self.fetch_kafka_live(kafka),
+                }
             }
         }
     }
+}
+
+fn decode_kafka_payload(bytes: &[u8], format: PayloadFormat) -> Result<Payload, DriverError> {
+    match format {
+        PayloadFormat::Json => {
+            let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|error| {
+                DriverError::InvalidResponse(format!("invalid kafka JSON payload: {error}"))
+            })?;
+            Ok(Payload::from_json(value))
+        }
+        PayloadFormat::Text => {
+            let text = String::from_utf8(bytes.to_vec()).map_err(|error| {
+                DriverError::InvalidResponse(format!("invalid kafka UTF-8 payload: {error}"))
+            })?;
+            Ok(Payload::from_text(text))
+        }
+        PayloadFormat::Binary => Ok(Payload::from_bytes(bytes.to_vec())),
+        PayloadFormat::Unknown => Err(DriverError::InvalidResponse(
+            "stream.kafka.format must be explicit (json/text/binary)".to_string(),
+        )),
+    }
+}
+
+fn default_content_type(format: PayloadFormat) -> &'static str {
+    match format {
+        PayloadFormat::Json => "application/json",
+        PayloadFormat::Text => "text/plain",
+        PayloadFormat::Binary => "application/octet-stream",
+        PayloadFormat::Unknown => "application/octet-stream",
+    }
+}
+
+fn read_checkpoint_offsets(path: &PathBuf) -> Result<HashMap<i32, i64>, DriverError> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
+        Err(error) => return Err(DriverError::Io(error)),
+    };
+
+    let parsed: serde_json::Value = serde_json::from_str(&content).map_err(|error| {
+        DriverError::InvalidResponse(format!("invalid kafka checkpoint JSON: {error}"))
+    })?;
+
+    let mut offsets = HashMap::new();
+    if let Some(map) = parsed.get("offsets").and_then(|value| value.as_object()) {
+        for (partition, offset_value) in map {
+            let partition = partition.parse::<i32>().map_err(|error| {
+                DriverError::InvalidResponse(format!(
+                    "invalid checkpoint partition key '{partition}': {error}"
+                ))
+            })?;
+            let offset = offset_value.as_i64().ok_or_else(|| {
+                DriverError::InvalidResponse(format!(
+                    "invalid checkpoint offset value for partition {partition}"
+                ))
+            })?;
+            offsets.insert(partition, offset);
+        }
+    }
+
+    Ok(offsets)
+}
+
+fn write_checkpoint_offsets(
+    path: &PathBuf,
+    topic: &str,
+    group_id: &str,
+    offsets: &HashMap<i32, i64>,
+) -> Result<(), DriverError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let mut json_offsets = serde_json::Map::new();
+    for (partition, offset) in offsets {
+        json_offsets.insert(
+            partition.to_string(),
+            serde_json::Value::Number((*offset).into()),
+        );
+    }
+
+    let json = serde_json::json!({
+        "topic": topic,
+        "group_id": group_id,
+        "updated_at_unix_ms": chrono::Utc::now().timestamp_millis(),
+        "offsets": json_offsets
+    });
+
+    let bytes = serde_json::to_vec_pretty(&json).map_err(|error| {
+        DriverError::InvalidResponse(format!("failed to encode checkpoint: {error}"))
+    })?;
+    std::fs::write(path, bytes)?;
+    Ok(())
 }
 
 /// REST driver configuration.
@@ -1123,8 +1335,12 @@ impl RestDriver {
 mod tests {
     use super::{
         delay_with_backoff_and_jitter_ms, ensure_circuit_allows_call, is_retryable_db_error,
-        CircuitBreaker, CircuitBreakerConfig, CircuitState, DriverError, RestDriver,
+        read_checkpoint_offsets, write_checkpoint_offsets, CircuitBreaker, CircuitBreakerConfig,
+        CircuitState, DriverError, RestDriver,
     };
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn backoff_grows_exponentially_without_jitter() {
@@ -1235,6 +1451,42 @@ mod tests {
             result,
             Err(DriverError::CircuitBreakerOpen { .. })
         ));
+    }
+
+    #[test]
+    fn checkpoint_offsets_roundtrip_json_file() {
+        let mut offsets = HashMap::new();
+        offsets.insert(0, 120);
+        offsets.insert(1, 88);
+
+        let path = temp_checkpoint_path("roundtrip");
+        write_checkpoint_offsets(&path, "mes.events", "rootsys.group", &offsets)
+            .expect("checkpoint write should succeed");
+
+        let restored = read_checkpoint_offsets(&path).expect("checkpoint read should succeed");
+        assert_eq!(restored.get(&0), Some(&120));
+        assert_eq!(restored.get(&1), Some(&88));
+    }
+
+    #[test]
+    fn checkpoint_read_returns_empty_for_missing_file() {
+        let path = temp_checkpoint_path("missing");
+        let restored =
+            read_checkpoint_offsets(&path).expect("read should not fail for missing file");
+        assert!(restored.is_empty());
+    }
+
+    fn temp_checkpoint_path(test_name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should move forward")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "rootsys-driver-checkpoint-{}-{}-{}.json",
+            test_name,
+            std::process::id(),
+            nanos
+        ))
     }
 }
 

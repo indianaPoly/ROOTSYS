@@ -17,8 +17,9 @@ use drivers::{
     PagePaginationConfig as DriverPagePaginationConfig, PostgresTlsMode as DriverPostgresTlsMode,
     RestConfig, RestDriver, RestPaginationConfig as DriverRestPaginationConfig,
     RestPaginationKind as DriverRestPaginationKind, RestRetryConfig as DriverRestRetryConfig,
-    StreamConfig as DriverStreamConfig, StreamDriver, StreamSourceKind as DriverStreamSourceKind,
-    StreamStartOffset as DriverStreamStartOffset, TextLineDriver,
+    StreamConfig as DriverStreamConfig, StreamDriver, StreamKafkaMode as DriverStreamKafkaMode,
+    StreamSourceKind as DriverStreamSourceKind, StreamStartOffset as DriverStreamStartOffset,
+    TextLineDriver,
 };
 use kernel::{
     ActionActor, ActionCommand, ActionHandler, ActionRequest, AddEvidenceToLinkCommand, AuditEvent,
@@ -36,7 +37,8 @@ use runtime::{
     ApiKeyLocation as RuntimeApiKeyLocation, ContractRegistry, DbKind as RuntimeDbKind, DriverKind,
     ExternalInterface, IntegrationPipeline, PostgresTlsMode as RuntimePostgresTlsMode,
     RestAuthKind, RestPaginationKind as RuntimeRestPaginationKind,
-    StreamSourceKind as RuntimeStreamSourceKind, StreamStartOffset as RuntimeStreamStartOffset,
+    StreamKafkaMode as RuntimeStreamKafkaMode, StreamSourceKind as RuntimeStreamSourceKind,
+    StreamStartOffset as RuntimeStreamStartOffset,
 };
 
 #[derive(Debug, Parser)]
@@ -1207,6 +1209,10 @@ fn stream_config_from_interface(
         brokers: kafka.brokers.clone(),
         topic: kafka.topic.clone(),
         group_id: kafka.group_id.clone(),
+        mode: match kafka.mode {
+            RuntimeStreamKafkaMode::MvpFile => DriverStreamKafkaMode::MvpFile,
+            RuntimeStreamKafkaMode::Live => DriverStreamKafkaMode::Live,
+        },
         format: kafka.format,
         max_batch_records: kafka.max_batch_records,
         poll_timeout_ms: kafka.poll_timeout_ms,
@@ -1214,7 +1220,11 @@ fn stream_config_from_interface(
             RuntimeStreamStartOffset::Earliest => DriverStreamStartOffset::Earliest,
             RuntimeStreamStartOffset::Latest => DriverStreamStartOffset::Latest,
         }),
-        mvp_input: InputSource::from_str(&kafka.mvp_input),
+        checkpoint_file: kafka.checkpoint_file.as_ref().map(PathBuf::from),
+        mvp_input: kafka
+            .mvp_input
+            .as_ref()
+            .map(|path| InputSource::from_str(path)),
     });
 
     Ok(DriverStreamConfig { source, kafka })

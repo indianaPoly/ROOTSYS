@@ -246,6 +246,8 @@ pub struct KafkaStreamConfig {
     pub brokers: Vec<String>,
     pub topic: String,
     pub group_id: String,
+    #[serde(default)]
+    pub mode: StreamKafkaMode,
     pub format: PayloadFormat,
     #[serde(default)]
     pub max_batch_records: Option<u32>,
@@ -253,7 +255,18 @@ pub struct KafkaStreamConfig {
     pub poll_timeout_ms: Option<u64>,
     #[serde(default)]
     pub start_offset: Option<StreamStartOffset>,
-    pub mvp_input: String,
+    #[serde(default)]
+    pub checkpoint_file: Option<String>,
+    #[serde(default)]
+    pub mvp_input: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamKafkaMode {
+    #[default]
+    MvpFile,
+    Live,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -1203,12 +1216,34 @@ impl ExternalInterface {
                                     }
                                 }
 
-                                if kafka.mvp_input.trim().is_empty() {
-                                    errors.push(ValidationError {
-                                        code: "STREAM_KAFKA_MVP_INPUT_EMPTY".to_string(),
-                                        path: "/driver/stream/kafka/mvp_input".to_string(),
-                                        message: "mvp_input must be a non-empty string".to_string(),
-                                    });
+                                match kafka.mode {
+                                    StreamKafkaMode::MvpFile => {
+                                        let mvp_input = kafka
+                                            .mvp_input
+                                            .as_ref()
+                                            .map(|value| value.trim())
+                                            .unwrap_or_default();
+                                        if mvp_input.is_empty() {
+                                            errors.push(ValidationError {
+                                                code: "STREAM_KAFKA_MVP_INPUT_EMPTY".to_string(),
+                                                path: "/driver/stream/kafka/mvp_input".to_string(),
+                                                message: "mvp_input must be a non-empty string when mode is 'mvp_file'".to_string(),
+                                            });
+                                        }
+                                    }
+                                    StreamKafkaMode::Live => {
+                                        if let Some(checkpoint_file) = &kafka.checkpoint_file {
+                                            if checkpoint_file.trim().is_empty() {
+                                                errors.push(ValidationError {
+                                                    code: "STREAM_KAFKA_CHECKPOINT_FILE_EMPTY"
+                                                        .to_string(),
+                                                    path: "/driver/stream/kafka/checkpoint_file"
+                                                        .to_string(),
+                                                    message: "checkpoint_file must be a non-empty string when provided".to_string(),
+                                                });
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -2464,6 +2499,63 @@ mod tests {
 
         let interface: ExternalInterface = serde_json::from_str(json).unwrap();
         interface.validate().unwrap();
+    }
+
+    #[test]
+    fn stream_kafka_live_mode_valid_without_mvp_input() {
+        let json = r#"{
+            "name": "mes-stream-live",
+            "version": "v1",
+            "driver": {
+                "kind": "stream",
+                "stream": {
+                    "source": "kafka",
+                    "kafka": {
+                        "brokers": ["localhost:9092"],
+                        "topic": "mes.events",
+                        "group_id": "rootsys.mes.live",
+                        "mode": "live",
+                        "format": "json",
+                        "max_batch_records": 500,
+                        "poll_timeout_ms": 1000,
+                        "start_offset": "latest",
+                        "checkpoint_file": "/tmp/rootsys.kafka.checkpoint.json"
+                    }
+                }
+            },
+            "payload_format": "json",
+            "record_id_policy": "hash_fallback",
+            "record_id_paths": ["/event_id"]
+        }"#;
+
+        let interface: ExternalInterface = serde_json::from_str(json).unwrap();
+        interface.validate().unwrap();
+    }
+
+    #[test]
+    fn stream_kafka_live_mode_rejects_empty_checkpoint_file() {
+        let json = r#"{
+            "name": "mes-stream-live",
+            "version": "v1",
+            "driver": {
+                "kind": "stream",
+                "stream": {
+                    "source": "kafka",
+                    "kafka": {
+                        "brokers": ["localhost:9092"],
+                        "topic": "mes.events",
+                        "group_id": "rootsys.mes.live",
+                        "mode": "live",
+                        "format": "json",
+                        "checkpoint_file": "   "
+                    }
+                }
+            }
+        }"#;
+
+        let interface: ExternalInterface = serde_json::from_str(json).unwrap();
+        let errors = interface.validate().unwrap_err();
+        assert!(has_code(&errors, "STREAM_KAFKA_CHECKPOINT_FILE_EMPTY"));
     }
 
     #[test]

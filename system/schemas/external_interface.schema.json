@@ -82,6 +82,13 @@
         "latest"
       ]
     },
+    "streamKafkaMode": {
+      "type": "string",
+      "enum": [
+        "mvp_file",
+        "live"
+      ]
+    },
     "dbKind": {
       "type": "string",
       "enum": [
@@ -392,8 +399,7 @@
         "brokers",
         "topic",
         "group_id",
-        "format",
-        "mvp_input"
+        "format"
       ],
       "properties": {
         "brokers": {
@@ -412,6 +418,9 @@
           "type": "string",
           "minLength": 1
         },
+        "mode": {
+          "$ref": "#/$defs/streamKafkaMode"
+        },
         "format": {
           "$ref": "#/$defs/payloadFormat"
         },
@@ -426,11 +435,35 @@
         "start_offset": {
           "$ref": "#/$defs/streamStartOffset"
         },
+        "checkpoint_file": {
+          "type": "string",
+          "minLength": 1
+        },
         "mvp_input": {
           "type": "string",
           "minLength": 1
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "mode"
+            ],
+            "properties": {
+              "mode": {
+                "const": "live"
+              }
+            }
+          },
+          "then": {},
+          "else": {
+            "required": [
+              "mvp_input"
+            ]
+          }
+        }
+      ]
     },
     "streamConfig": {
       "type": "object",

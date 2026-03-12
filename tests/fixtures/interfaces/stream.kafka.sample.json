@@ -9,6 +9,7 @@
         "brokers": ["localhost:9092"],
         "topic": "mes.events",
         "group_id": "rootsys.mes.v1",
+        "mode": "mvp_file",
         "format": "json",
         "max_batch_records": 500,
         "poll_timeout_ms": 1000,
