@@ -10,6 +10,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "framer-motion": "^12.34.5",
+    "lenis": "^1.3.18-dev.1",
     "next": "16.1.6",
     "react": "19.2.0",
     "react-dom": "19.2.0"
